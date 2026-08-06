@@ -6,7 +6,7 @@ export type PluginImportServer = {
   serverKey: string;
   url: string | null;
   supported: boolean;
-  skippedReason: "missing_url" | "local_unsupported" | "invalid_url" | "unsupported_auth" | null;
+  skippedReason: "headers_unsupported" | "invalid_config" | "invalid_url" | "local_unsupported" | "missing_url" | "unsupported_auth" | null;
 };
 
 export type PluginImportSkill = {
@@ -43,7 +43,7 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 }
 
 function skippedServerReason(value: unknown): PluginImportServer["skippedReason"] {
-  if (value === "missing_url" || value === "local_unsupported" || value === "invalid_url" || value === "unsupported_auth") {
+  if (value === "headers_unsupported" || value === "invalid_config" || value === "invalid_url" || value === "local_unsupported" || value === "missing_url" || value === "unsupported_auth") {
     return value;
   }
   return null;

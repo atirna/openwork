@@ -33,6 +33,8 @@ function serverStatus(preview: PluginImportPreview["servers"][number]): string {
   if (preview.supported) return "Ready";
   if (preview.skippedReason === "local_unsupported") return "Desktop-only servers cannot be imported";
   if (preview.skippedReason === "missing_url") return "No remote URL found";
+  if (preview.skippedReason === "headers_unsupported") return "Static headers are not supported yet";
+  if (preview.skippedReason === "invalid_config") return "Invalid Agent Plugin MCP configuration";
   return "Unsupported";
 }
 

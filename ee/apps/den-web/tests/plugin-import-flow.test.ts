@@ -42,4 +42,34 @@ describe("plugin import flow", () => {
     expect(preview.servers[0]?.serverKey).toBe("salesforce");
     expect(preview.skills[0]?.skillKey).toBe("account-research");
   });
+
+  test("preserves Agent Plugin compatibility warnings in the draft", () => {
+    const preview = parsePluginImportPreview({
+      item: {
+        repositoryFullName: "different-ai/team-tools",
+        rootPath: "plugins/portable",
+        servers: [{
+          name: "local-tool",
+          serverKey: "local-tool",
+          url: null,
+          supported: false,
+          skippedReason: "local_unsupported",
+        }, {
+          name: "header-tool",
+          serverKey: "header-tool",
+          url: "https://mcp.example.test/mcp",
+          supported: false,
+          skippedReason: "headers_unsupported",
+        }],
+        skills: [],
+        warnings: ["Skill assets are not installed yet."],
+      },
+    });
+
+    expect(preview.servers.map((server) => server.skippedReason)).toEqual([
+      "local_unsupported",
+      "headers_unsupported",
+    ]);
+    expect(preview.warnings).toEqual(["Skill assets are not installed yet."]);
+  });
 });

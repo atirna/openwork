@@ -850,7 +850,10 @@ function GithubConnectedAccountSelectionPhase({ connectorAccountId }: { connecto
   );
 }
 
-function manifestLabel(kind: "marketplace" | "plugin" | null, marketplacePluginCount: number | null): string | null {
+function manifestLabel(kind: "agent-plugin" | "marketplace" | "plugin" | null, marketplacePluginCount: number | null): string | null {
+  if (kind === "agent-plugin") {
+    return "Agent Plugin Detected";
+  }
   if (kind === "marketplace") {
     if (marketplacePluginCount && marketplacePluginCount > 1) {
       return `Claude Marketplace · ${marketplacePluginCount} plugins`;
@@ -875,7 +878,7 @@ function RepositoryCard({
 }: {
   fullName: string;
   defaultBranch: string | null;
-  manifestKind: "marketplace" | "plugin" | null;
+  manifestKind: "agent-plugin" | "marketplace" | "plugin" | null;
   marketplacePluginCount: number | null;
   configuredInstanceId: string | null;
   configuredHref: string | null;

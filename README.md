@@ -73,7 +73,7 @@ OpenWork Den is the control plane for managing OpenWork across a team or organiz
 - Invite teammates, create teams, and manage access from one place.
 - Set desktop policies, restrict local model access, and control which app versions your organization can use.
 - Publish skills and plugins through marketplaces, then assign them to the organization, a team, or specific people.
-- Import Anthropic-compatible plugins and make their supported skills and remote MCPs available through the OpenWork MCP.
+- Import Agent Plugins or Anthropic-compatible plugins and make their supported skills and remote MCPs available through the OpenWork MCP.
 
 <img width="1546" height="915" alt="OpenWork Den organization control plane" src="https://github.com/user-attachments/assets/033dbbfe-5661-4f7c-869c-46278406d6cc" />
 
