@@ -776,8 +776,20 @@ export class CloudProviderSync {
     const runtimeFileChanged = engineWorkspace
       ? (await writeOpenworkRuntimeConfigFile(this.config, engineWorkspace.id)).changed
       : false;
-    // Credentials reach a live engine through PUT /auth/{providerID} below, so
-    // a key rotation never needs a reload. Provider *config* (models, npm,
+    // Deliver credentials before disposing the current provider instances.
+    // OpenCode constructs and caches SDK clients from config + auth together;
+    // reloading first can cache a client without the just-synced credential,
+    // even though PUT /auth/{providerID} later reports success. Credential
+    // rotation therefore needs the same instance refresh as provider config.
+    const authResult = await syncManagedProviderAuth({
+      config: this.config,
+      env: this.env,
+      fetchImpl: this.fetchImpl,
+      logger: this.logger,
+    });
+    const authChanged = authResult.delivered.length > 0 || authResult.removed.length > 0;
+
+    // Provider *config* (models, npm,
     // options.baseURL) has no live path: the engine reads it from
     // OPENCODE_CONFIG when it builds an instance, and the only write endpoint
     // that accepts it, PATCH /config, performs the same instance dispose as
@@ -788,7 +800,8 @@ export class CloudProviderSync {
     this.reloadPending = this.reloadPending
       || providerStateChanged
       || workspaceCleanup.runtimeChanged
-      || runtimeFileChanged;
+      || runtimeFileChanged
+      || authChanged;
     let reloadError: unknown;
     let reloadDeferred = false;
     if (engineWorkspace && this.reloadPending) {
@@ -808,13 +821,6 @@ export class CloudProviderSync {
         }
       }
     }
-    await syncManagedProviderAuth({
-      config: this.config,
-      env: this.env,
-      fetchImpl: this.fetchImpl,
-      logger: this.logger,
-    });
-
     this.managedProviderIds = new Set(Object.keys(desiredProviders));
     const detail: CloudProviderSyncRunDetail = {
       fingerprintChanged: this.fingerprint !== prepared.fingerprint,
@@ -907,6 +913,15 @@ export class CloudProviderSync {
       const fileResult = await writeOpenworkRuntimeConfigFile(this.config, engineWorkspace.id);
       this.reloadPending = this.reloadPending || providerChanged || fileResult.changed;
     }
+    const authResult = await syncManagedProviderAuth({
+      config: this.config,
+      env: this.env,
+      fetchImpl: this.fetchImpl,
+      logger: this.logger,
+    });
+    this.reloadPending = this.reloadPending
+      || authResult.delivered.length > 0
+      || authResult.removed.length > 0;
     let reloadError: unknown;
     if (this.reloadPending && (await this.reloadDeferredByActivity())) {
       this.scheduleReloadRetry();
@@ -920,12 +935,6 @@ export class CloudProviderSync {
         this.scheduleReloadRetry();
       }
     }
-    await syncManagedProviderAuth({
-      config: this.config,
-      env: this.env,
-      fetchImpl: this.fetchImpl,
-      logger: this.logger,
-    });
     if (reloadError) throw reloadError;
   }
 }

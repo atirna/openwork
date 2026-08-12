@@ -354,6 +354,9 @@ describe("cloud provider sync gateway", () => {
     }]);
     // The idle engine accepted the reload, so no reload is still owed.
     expect(firstStatus.reloadPending).toBe(false);
+    expect(engineRequests.indexOf("PUT /auth/lpr_test")).toBeLessThan(
+      engineRequests.indexOf("POST /instance/dispose"),
+    );
 
     expect(denRequests.every((request) => request.authorization === "Bearer den-token")).toBe(true);
     expect(denRequests.every((request) => request.orgId === "org_test")).toBe(true);

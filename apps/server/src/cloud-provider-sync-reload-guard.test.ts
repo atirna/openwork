@@ -308,7 +308,8 @@ describe("engine reload guard", () => {
     const server = await startServer(config);
     stops.push(() => server.stop());
     const base = `http://127.0.0.1:${server.port}`;
-    const den = startFakeDen({ providers: [stableDenProvider()] });
+    const provider = stableDenProvider();
+    const den = startFakeDen({ providers: [provider] });
 
     const put = await fetch(`${base}/den-session`, {
       method: "PUT",
@@ -327,6 +328,9 @@ describe("engine reload guard", () => {
     }));
     const settledDisposes = engine.disposeCount();
     expect(settledDisposes).toBeGreaterThan(0);
+    expect(engine.requests.indexOf("PUT /auth/lpr_steady")).toBeLessThan(
+      engine.requests.indexOf("POST /instance/dispose"),
+    );
 
     // Every later pass sees byte-identical Den state. A pass that still reports
     // "applied" here is the runaway-dispose bug: on the 5-minute interval it
@@ -344,6 +348,22 @@ describe("engine reload guard", () => {
     // The credential push is fingerprint-guarded, so it must not re-deliver
     // on every pass either.
     expect(engine.requests.filter((entry) => entry === "PUT /auth/lpr_steady")).toHaveLength(1);
+
+    // A credential rotation leaves the provider config byte-identical, but
+    // the cached SDK client must still be replaced after the new auth lands.
+    provider.apiKey = "sk-steady-provider-rotated";
+    const beforeRotationDisposes = engine.disposeCount();
+    const rotated = await readJsonObject(await fetch(`${base}/cloud-provider-sync/run`, {
+      method: "POST",
+      headers: hostHeaders(),
+      body: JSON.stringify({ reason: "credential_rotated" }),
+    }));
+    expect(rotated.status).toBe("applied");
+    expect(engine.requests.filter((entry) => entry === "PUT /auth/lpr_steady")).toHaveLength(2);
+    expect(engine.disposeCount()).toBe(beforeRotationDisposes + 1);
+    expect(engine.requests.lastIndexOf("PUT /auth/lpr_steady")).toBeLessThan(
+      engine.requests.lastIndexOf("POST /instance/dispose"),
+    );
   });
 
   test("a deferred reload lands by itself once the engine idles, even with no Den session", async () => {
