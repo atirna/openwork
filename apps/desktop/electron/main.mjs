@@ -1217,13 +1217,13 @@ const desktopAutomationRunner = createDesktopAutomationRunner({
 // Scheduled Automations are due at wall-clock times a laptop routinely sleeps
 // through. Waking the machine has to restore the runner connection now, not
 // whenever the renderer next refreshes its credential.
-for (const wakeEvent of ["resume", "unlock-screen"]) {
-  powerMonitor.on(wakeEvent, () => {
-    if (desktopAutomationRunner.reconnect().reconnecting) {
-      console.info(`[automation-runner] reconnecting after ${wakeEvent}`);
-    }
-  });
-}
+const reconnectAutomationRunner = (wakeEvent) => {
+  if (desktopAutomationRunner.reconnect().reconnecting) {
+    console.info(`[automation-runner] reconnecting after ${wakeEvent}`);
+  }
+};
+powerMonitor.on("resume", () => reconnectAutomationRunner("resume"));
+powerMonitor.on("unlock-screen", () => reconnectAutomationRunner("unlock-screen"));
 
 let runtimeDisposedForQuit = false;
 let runtimeDisposeInProgress = false;
