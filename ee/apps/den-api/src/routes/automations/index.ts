@@ -7,6 +7,7 @@ import {
   AUTOMATION_MODEL_ATTENTION_CAPABILITY_HEADER,
   automationDesktopRunnerAssignmentSchema,
   automationDesktopRunnerRegistrationSchema,
+  automationDesktopRunnerPresenceSchema,
   automationDesktopRunnerResultSchema,
   automationDetailSchema,
   automationListSchema,
@@ -137,6 +138,19 @@ export function registerAutomationRoutes<T extends { Variables: RouteVariables }
         }),
       ))
     },
+  )
+
+  app.get(
+    "/v1/automation-runners/presence",
+    describeNonMcpRoute({
+      tags: ["Automations"], operationId: "getAutomationDesktopRunnerPresence", "x-mcp": false,
+      summary: "Report whether a desktop runner is connected",
+      description: "Desktop Automations only run while one of the owner's desktops is connected. "
+        + "Management surfaces read this to warn before an occurrence is due rather than after it was missed.",
+      responses: { 200: jsonResponse("Desktop runner presence.", automationDesktopRunnerPresenceSchema) },
+    }),
+    orgMemberRoute(),
+    async (c) => c.json(await service.desktopRunnerPresence(scope(c))),
   )
 
   // Runner tokens are stateless 12h credentials, so authorization is re-derived

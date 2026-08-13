@@ -75,11 +75,16 @@ export function AutomationRunnerBridge({ enabled }: { enabled: boolean }) {
 
     const handleSettingsChanged = () => void connect()
     window.addEventListener(denSettingsChangedEvent, handleSettingsChanged)
+    // Rejoining a network mints a fresh credential immediately instead of
+    // leaving this desktop unreachable until the next refresh, which is long
+    // enough for a scheduled occurrence to come due and be missed.
+    window.addEventListener("online", handleSettingsChanged)
     void connect()
     return () => {
       disposed = true
       if (timer) clearTimeout(timer)
       window.removeEventListener(denSettingsChangedEvent, handleSettingsChanged)
+      window.removeEventListener("online", handleSettingsChanged)
       void disconnect()
     }
   }, [enabled, status])

@@ -152,6 +152,45 @@ test("a runner credential bound elsewhere reports why this desktop stays disconn
   ])
 })
 
+test("waking the machine reopens the runner connection without new credentials", async () => {
+  const streams = []
+  const runner = createDesktopAutomationRunner({
+    getLocalRuntime: async () => ({ baseUrl: "http://127.0.0.1:3000", token: "local" }),
+    fetchImpl: async (url, init) => {
+      if (!String(url).endsWith("/v1/automation-runners/events")) return Response.json({ items: [] })
+      streams.push(init?.signal)
+      // A suspended machine leaves this hanging rather than failing, which is
+      // what keeps the reconnect backoff from ever starting.
+      return new Promise((_resolve, reject) => {
+        init?.signal?.addEventListener("abort", () => reject(new Error("aborted")), { once: true })
+      })
+    },
+  })
+  runner.configure({
+    baseUrl: "https://den.example.com/api/den",
+    token: runnerTokenFor("https://den.example.com/api/den"),
+    runnerId: "runner-1",
+  })
+  await new Promise((resolve) => setTimeout(resolve, 25))
+  assert.equal(streams.length, 1)
+  assert.equal(streams[0]?.aborted, false)
+
+  assert.deepEqual(runner.reconnect(), { reconnecting: true })
+  await new Promise((resolve) => setTimeout(resolve, 25))
+  assert.equal(streams[0]?.aborted, true)
+  assert.equal(streams.length, 2)
+  runner.stop()
+})
+
+test("waking a desktop that was never configured stays disconnected", () => {
+  const runner = createDesktopAutomationRunner({
+    getLocalRuntime: async () => ({ baseUrl: "http://127.0.0.1:3000", token: "local" }),
+    fetchImpl: async () => { throw new Error("no network in test") },
+  })
+  assert.deepEqual(runner.reconnect(), { reconnecting: false })
+  runner.stop()
+})
+
 test("desktop Automation execution creates a normal visible local OpenWork thread", async () => {
   const requests = []
   let snapshots = 0

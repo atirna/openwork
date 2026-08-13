@@ -89,6 +89,7 @@ const {
   nativeImage,
   nativeTheme,
   net: electronNet,
+  powerMonitor,
   Notification: ElectronNotification,
   session,
   shell,
@@ -1212,6 +1213,17 @@ const desktopAutomationRunner = createDesktopAutomationRunner({
   },
   log: (state) => console.info(`[automation-runner] ${state}`),
 });
+
+// Scheduled Automations are due at wall-clock times a laptop routinely sleeps
+// through. Waking the machine has to restore the runner connection now, not
+// whenever the renderer next refreshes its credential.
+for (const wakeEvent of ["resume", "unlock-screen"]) {
+  powerMonitor.on(wakeEvent, () => {
+    if (desktopAutomationRunner.reconnect().reconnecting) {
+      console.info(`[automation-runner] reconnecting after ${wakeEvent}`);
+    }
+  });
+}
 
 let runtimeDisposedForQuit = false;
 let runtimeDisposeInProgress = false;

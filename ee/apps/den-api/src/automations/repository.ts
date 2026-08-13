@@ -4,6 +4,8 @@ import {
   AUTOMATION_MAXIMUM_ATTEMPTS,
   automationOccurrenceIdentity,
   automationRevisionDigest,
+  desktopClaimDeadline,
+  missedDesktopRunMessage,
   nextAutomationOccurrence,
 } from "@openwork/automations"
 import type {
@@ -414,6 +416,11 @@ export class DenAutomationRepository implements AutomationRepository {
       const nextDueAt = input.trigger === "manual"
         ? input.automation.nextDueAt
         : nextAutomationOccurrence(input.revision.schedule, input.scheduledFor ?? input.now)
+      const claimDeadlineAt = desktopClaimDeadline({
+        now: input.now,
+        windowMs: input.claimDeadlineMs ?? input.leaseMs,
+        nextDueAt,
+      })
       await tx.insert(AutomationRunTable).values({
         id: newRunId,
         automation_id: normalizeAutomationId(input.automation.id),
@@ -423,7 +430,7 @@ export class DenAutomationRepository implements AutomationRepository {
         idempotency_key: identity.idempotencyKey,
         status: overlap ? "skipped" : "queued",
         execution_target: input.revision.executionTarget ?? "desktop",
-        claim_deadline_at: overlap ? null : new Date(input.now + (input.claimDeadlineMs ?? input.leaseMs)),
+        claim_deadline_at: overlap ? null : new Date(claimDeadlineAt),
         lease_owner: null,
         lease_expires_at: null,
         heartbeat_at: null,
@@ -1087,22 +1094,64 @@ export class DenAutomationRepository implements AutomationRepository {
     ))
   }
 
+  /** Latest moment any of this owner's desktop runners registered or asked for work. */
+  async desktopRunnerLastSeenAt(input: { organizationId: string; ownerMemberId: string }): Promise<number | null> {
+    const rows = await db.select({ lastSeenAt: AutomationRunnerTable.last_seen_at })
+      .from(AutomationRunnerTable)
+      .where(and(
+        eq(AutomationRunnerTable.organization_id, normalizeOrganizationId(input.organizationId)),
+        eq(AutomationRunnerTable.owner_member_id, normalizeMemberId(input.ownerMemberId)),
+      )).orderBy(desc(AutomationRunnerTable.last_seen_at)).limit(1)
+    return rows[0]?.lastSeenAt?.getTime() ?? null
+  }
+
+  private async missedDesktopReason(input: {
+    organizationId: string
+    ownerMemberId: string
+    now: number
+  }): Promise<string> {
+    // The run being expired is still queued, so a running row is always a
+    // different occupied occurrence.
+    const busy = await db.select({ id: AutomationRunTable.id })
+      .from(AutomationRunTable)
+      .innerJoin(AutomationTable, eq(AutomationTable.id, AutomationRunTable.automation_id))
+      .where(and(
+        eq(AutomationTable.organization_id, normalizeOrganizationId(input.organizationId)),
+        eq(AutomationTable.owner_member_id, normalizeMemberId(input.ownerMemberId)),
+        eq(AutomationRunTable.execution_target, "desktop"),
+        eq(AutomationRunTable.status, "running"),
+      )).limit(1)
+    return missedDesktopRunMessage({
+      busy: Boolean(busy[0]),
+      lastSeenAt: await this.desktopRunnerLastSeenAt(input),
+      now: input.now,
+    })
+  }
+
   async expireUnclaimedDesktop(input: { now: number; limit: number }): Promise<string[]> {
-    const rows = await db.select().from(AutomationRunTable).where(and(
-      eq(AutomationRunTable.status, "queued"),
-      eq(AutomationRunTable.execution_target, "desktop"),
-      lte(AutomationRunTable.claim_deadline_at, new Date(input.now)),
-    )).orderBy(asc(AutomationRunTable.claim_deadline_at)).limit(input.limit)
+    const rows = await db.select({ run: AutomationRunTable, automation: AutomationTable })
+      .from(AutomationRunTable)
+      .innerJoin(AutomationTable, eq(AutomationTable.id, AutomationRunTable.automation_id))
+      .where(and(
+        eq(AutomationRunTable.status, "queued"),
+        eq(AutomationRunTable.execution_target, "desktop"),
+        lte(AutomationRunTable.claim_deadline_at, new Date(input.now)),
+      )).orderBy(asc(AutomationRunTable.claim_deadline_at)).limit(input.limit)
     const expired: string[] = []
-    for (const run of rows) {
+    for (const { run, automation } of rows) {
+      const message = await this.missedDesktopReason({
+        organizationId: automation.organization_id,
+        ownerMemberId: automation.owner_member_id,
+        now: input.now,
+      })
       await db.update(AutomationRunTable).set({
         status: "skipped",
         error: {
           code: "runner_unavailable",
-          message: "Missed — desktop runner unavailable.",
+          message,
           retryable: false,
         },
-        result_summary: "Missed — desktop runner unavailable.",
+        result_summary: message,
         finished_at: new Date(input.now),
         updated_at: new Date(input.now),
       }).where(and(eq(AutomationRunTable.id, run.id), eq(AutomationRunTable.status, "queued")))

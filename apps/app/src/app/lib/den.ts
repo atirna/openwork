@@ -8,6 +8,7 @@ import {
 } from "@openwork/types/automations";
 import type {
   AutomationDetail,
+  AutomationDesktopRunnerPresence,
   AutomationDesktopRunnerRegistration,
   AutomationList,
   AutomationRun,
@@ -2639,6 +2640,15 @@ export function createDenClient(options: { baseUrl: string; token?: string | nul
       if (options.limit) params.set("limit", String(options.limit));
       const query = params.size > 0 ? `?${params.toString()}` : "";
       return requestJson<AutomationList>(baseUrls, `/v1/automations${query}`, {
+        method: "GET",
+        token,
+        organizationId: orgId,
+        automationModelAttentionCapable: true,
+      });
+    },
+
+    async getAutomationDesktopRunnerPresence(orgId: string): Promise<AutomationDesktopRunnerPresence> {
+      return requestJson<AutomationDesktopRunnerPresence>(baseUrls, "/v1/automation-runners/presence", {
         method: "GET",
         token,
         organizationId: orgId,

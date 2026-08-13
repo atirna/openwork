@@ -76,7 +76,10 @@ function runVariant(status: AutomationRun["status"]): "default" | "secondary" | 
 
 function runLabel(run: AutomationRun) {
   if (run.status === "skipped" && run.error?.code === "runner_unavailable") {
-    return "Missed — desktop runner unavailable"
+    // Den names the cause it observed — no desktop, a busy desktop, or one
+    // that stayed silent. Older receipts predate that and carry the single
+    // generic wording, so fall back rather than restate it for every cause.
+    return run.error.message.trim() || "Missed — desktop runner unavailable"
   }
   if (run.status === "skipped" && (run.error?.code === "model_access_lost" || run.error?.code === "provider_unavailable")) {
     return "Skipped — model unavailable"
@@ -174,6 +177,12 @@ export function AutomationsPage(props: { providerCatalog?: AutomationProviderCat
     queryKey: [...queryRoot, "models"],
     queryFn: () => client!.listOrgLlmProviders(organizationId!),
     enabled: ready,
+  })
+  const runnerPresenceQuery = useQuery({
+    queryKey: [...queryRoot, "runner-presence"],
+    queryFn: () => client!.getAutomationDesktopRunnerPresence(organizationId!),
+    enabled: ready,
+    refetchInterval: 60_000,
   })
   const detailQuery = useQuery({
     queryKey: [...queryRoot, "detail", selectedId],
@@ -424,6 +433,21 @@ export function AutomationsPage(props: { providerCatalog?: AutomationProviderCat
             </Button>
           </div>
         </div>
+
+        {(detail.revision.executionTarget ?? "desktop") === "desktop"
+          && task.state === "active"
+          && runnerPresenceQuery.data?.connected === false ? (
+          <Alert variant="warning" data-automation-runner-offline>
+            <AlertCircle />
+            <AlertTitle>No desktop connected</AlertTitle>
+            <AlertDescription>
+              <p>
+                This Automation runs on your desktop, and Den cannot see one right now. Occurrences that
+                come due are recorded as missed unless a signed-in desktop is running by then.
+              </p>
+            </AlertDescription>
+          </Alert>
+        ) : null}
 
         {task.needsAttentionReason ? (
           <Alert variant="warning" data-automation-model-attention={modelNeedsAttention || undefined}>

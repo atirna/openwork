@@ -1,7 +1,9 @@
 import { randomUUID } from "node:crypto"
 import type { AutomationClaimResult, AutomationListItem } from "@openwork/automations"
+import { AUTOMATION_MIN_CLAIM_WINDOW_MS, desktopRunnerConnected } from "@openwork/automations"
 import type {
   AutomationDesktopRunnerCapability,
+  AutomationDesktopRunnerPresence,
   AutomationDesktopRunnerResult,
   AutomationDesktopRunnerRegistration,
   AutomationRunEventType,
@@ -216,7 +218,10 @@ export class AutomationService {
       nonce: randomUUID(),
       leaseOwner: schedulerOwner,
       leaseMs: env.automations.leaseMs,
-      claimDeadlineMs: env.automations.runnerClaimDeadlineMs,
+      // Someone is watching this one. The recovery window exists for occurrences
+      // that come due while nobody is at the machine; a manual run should say
+      // what happened promptly instead of sitting queued for minutes.
+      claimDeadlineMs: AUTOMATION_MIN_CLAIM_WINDOW_MS,
       now: Date.now(),
     })
     if (claim.kind === "claimed" && claim.run.executionTarget === "cloud") {
@@ -329,6 +334,12 @@ export class AutomationService {
 
   touchDesktopRunner(scope: DesktopRunnerScope) {
     return automationRepository.touchDesktopRunner({ ...scope, now: Date.now() })
+  }
+
+  /** Lets a management client warn before a due occurrence instead of after it. */
+  async desktopRunnerPresence(scope: OwnerScope): Promise<AutomationDesktopRunnerPresence> {
+    const lastSeenAt = await automationRepository.desktopRunnerLastSeenAt(scope)
+    return { connected: desktopRunnerConnected({ lastSeenAt, now: Date.now() }), lastSeenAt }
   }
 
   async discoverDesktopRunnerWork(scope: DesktopRunnerScope) {

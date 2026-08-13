@@ -191,6 +191,21 @@ export const automationDesktopRunnerRegistrationSchema = z.object({
 })
 export type AutomationDesktopRunnerRegistration = z.infer<typeof automationDesktopRunnerRegistrationSchema>
 
+/**
+ * How long a desktop counts as connected after it was last seen. Registration
+ * refreshes presence every few minutes and idle event streams deliberately do
+ * not write to the database, so this is generous enough to survive an idle
+ * desktop and short enough to catch one that was closed.
+ */
+export const AUTOMATION_DESKTOP_RUNNER_PRESENCE_WINDOW_MS = 10 * 60_000
+
+/** Whether a Desktop Automation has anywhere to run right now. */
+export const automationDesktopRunnerPresenceSchema = z.object({
+  connected: z.boolean(),
+  lastSeenAt: timestampSchema.nullable(),
+})
+export type AutomationDesktopRunnerPresence = z.infer<typeof automationDesktopRunnerPresenceSchema>
+
 export const automationRunnerNotificationSchema = z.object({
   type: z.enum(["automation_work_available", "automation_cancellation_available"]),
   cursor: z.string().trim().min(1).max(40),

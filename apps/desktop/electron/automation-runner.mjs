@@ -386,6 +386,21 @@ export function createDesktopAutomationRunner(options) {
       if (configuration && !stopped) void connectLoop(generation)
       return { connected: false }
     },
+    /**
+     * A suspended machine leaves the event stream half-open: the socket is
+     * gone but no error arrives, so the reconnect backoff never starts and the
+     * desktop can sit unreachable long enough to miss an occurrence. Waking
+     * the machine tears the stream down so the loop reconnects immediately.
+     * A run already in flight keeps its lease and is left alone.
+     */
+    reconnect() {
+      if (stopped || !configuration) return { reconnecting: false }
+      connectionController?.abort()
+      connectionController = null
+      generation += 1
+      void connectLoop(generation)
+      return { reconnecting: true }
+    },
     stop() {
       stopped = true
       generation += 1
