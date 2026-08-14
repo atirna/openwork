@@ -77,6 +77,7 @@ export type ExecuteCapabilityToolResult = {
   isError?: boolean
   content: AgentToolContentPart[]
   structuredContent?: Record<string, unknown>
+  _meta?: Record<string, unknown>
 }
 
 export type CapabilityExecuteInput = {
@@ -273,7 +274,20 @@ export function externalCapabilitySuccessToolResult(
     && isRecord(result.result.structuredContent)
     ? result.result.structuredContent
     : undefined
-  if (!result.schemaGuidance) return { content, ...(structuredContent ? { structuredContent } : {}) }
+  const providerMeta = isRecord(result.result) && isRecord(result.result._meta)
+    ? result.result._meta
+    : {}
+  const meta = {
+    ...providerMeta,
+    ...(result.mcpApp ? { "openwork/mcpApp": result.mcpApp } : {}),
+  }
+  if (!result.schemaGuidance) {
+    return {
+      content,
+      ...(structuredContent ? { structuredContent } : {}),
+      ...(Object.keys(meta).length > 0 ? { _meta: meta } : {}),
+    }
+  }
   return {
     content: [
       ...content,
@@ -283,6 +297,7 @@ export function externalCapabilitySuccessToolResult(
       ...(structuredContent ?? {}),
       schemaGuidance: result.schemaGuidance,
     },
+    ...(Object.keys(meta).length > 0 ? { _meta: meta } : {}),
   }
 }
 

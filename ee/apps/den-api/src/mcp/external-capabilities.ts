@@ -173,11 +173,18 @@ export type ExternalCapabilityMatch = CapabilityMatch & {
   /** Tells the generic execute facade where MCP arguments must be supplied. */
   invocation?: { argumentsField: "body" }
   /** Distinguishes a connection-health result from a callable capability. */
-  kind?: "connection_status"
+  kind?: "connection_status" | "mcp_app"
   /** Set for connection-level status rows: the tool exists but needs a human/admin fix before real tools can be listed. */
   status?: "needs_connection" | "error"
   hint?: string
   connectionStatus?: ExternalConnectionStatus
+}
+
+export type ExternalMcpAppLaunch = {
+  connectionId: string
+  toolName: string
+  resourceUri: string
+  arguments: Record<string, unknown>
 }
 
 export type ExternalConnectionStatus = {
@@ -218,6 +225,17 @@ const PROVIDER_ADMIN_ACTION_PATTERN = /\b(?:app (?:is )?not installed|admin(?:is
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value)
+}
+
+export function externalMcpAppResourceUri(tool: { _meta?: unknown }): string | null {
+  const meta = isRecord(tool._meta) ? tool._meta : {}
+  const ui = isRecord(meta.ui) ? meta.ui : {}
+  const resourceUri = typeof ui.resourceUri === "string"
+    ? ui.resourceUri
+    : typeof meta["ui/resourceUri"] === "string"
+      ? meta["ui/resourceUri"]
+      : null
+  return resourceUri?.startsWith("ui://") ? resourceUri : null
 }
 
 function cappedErrorMessage(message: string): string {
@@ -760,6 +778,7 @@ async function probeExternalMcpConnection(input: {
     const summaryTokens = tokenize(summary)
     const score = scoreText(nameTokens, summaryTokens, input.queryTokens)
     if (score <= 0) continue
+    const resourceUri = externalMcpAppResourceUri(tool)
     add({
       name: buildExternalCapabilityName(connection.id, tool.name),
       method: "MCP",
@@ -772,6 +791,7 @@ async function probeExternalMcpConnection(input: {
       argumentsSchema: tool.inputSchema,
       schemaDigest: externalMcpToolSchemaDigest(tool.inputSchema),
       invocation: { argumentsField: "body" },
+      ...(resourceUri ? { kind: "mcp_app" as const, mcpApp: { resourceUri } } : {}),
       ...(input.scriptNamespace ? { scriptPath: codemodeScriptPath(input.scriptNamespace, tool.name) } : {}),
     })
   }
@@ -867,6 +887,7 @@ export type ExternalCapabilityExecuteResult =
       ok: true
       result: Awaited<ReturnType<typeof callExternalMcpTool>>
       schemaGuidance?: ExternalMcpSchemaGuidance
+      mcpApp?: ExternalMcpAppLaunch
     }
   | {
       ok: false
@@ -1172,10 +1193,21 @@ export async function executeExternalCapability(input: {
 
     schemaGuidance = advisorySchemaGuidance(schemaWarnings)
     const result = await providerCall
+    const resourceUri = externalMcpAppResourceUri(tool)
     return {
       ok: true,
       result,
       ...(schemaGuidance ? { schemaGuidance } : {}),
+      ...(resourceUri
+        ? {
+            mcpApp: {
+              connectionId: connection.id,
+              toolName: tool.name,
+              resourceUri,
+              arguments: forwardedArguments,
+            },
+          }
+        : {}),
     }
   } catch (error) {
     const message = upstreamErrorMessage(error)

@@ -9,6 +9,7 @@ import {
 import { formatMcpAppDiagnostic, safeMcpAppDiagnosticMessage } from "../src/components/chat/mcp-app-diagnostics"
 import {
   buildMcpAppCsp,
+  gatewayMcpAppLaunch,
   isActionableMcpAppResolutionError,
   secureMcpAppHtml,
 } from "../src/components/chat/mcp-app-frame"
@@ -31,6 +32,30 @@ function fixture(overrides: Partial<OpenworkMcpAppResource> = {}): OpenworkMcpAp
 }
 
 describe("MCP App iframe policy", () => {
+  test("accepts a namespaced gateway launch reference without exposing credentials", () => {
+    expect(gatewayMcpAppLaunch({
+      source: "provider",
+      "openwork/mcpApp": {
+        connectionId: "emc_01atlas",
+        toolName: "open_project_atlas",
+        resourceUri: "ui://atlas/1/index.html",
+        arguments: { query: "migration" },
+      },
+    })).toEqual({
+      connectionId: "emc_01atlas",
+      toolName: "open_project_atlas",
+      resourceUri: "ui://atlas/1/index.html",
+      arguments: { query: "migration" },
+    })
+    expect(gatewayMcpAppLaunch({
+      "openwork/mcpApp": {
+        connectionId: "emc_01atlas",
+        toolName: "open_project_atlas",
+        resourceUri: "ui://atlas/1/index.html",
+      },
+    })).toBeNull()
+  })
+
   test("uses the opaque message origin for packaged file hosts", () => {
     expect(normalizeMcpAppHostOrigin("file://")).toBe("null")
     expect(normalizeMcpAppHostOrigin("null")).toBe("null")

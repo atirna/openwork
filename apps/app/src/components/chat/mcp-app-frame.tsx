@@ -5,7 +5,12 @@ import type { DynamicToolUIPart } from "ai"
 import { AppBridge, PostMessageTransport } from "@modelcontextprotocol/ext-apps/app-bridge"
 import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js"
 
-import { OpenworkServerError, type OpenworkMcpAppResource, type OpenworkMcpAppToolResult } from "@/app/lib/openwork-server"
+import {
+  OpenworkServerError,
+  type OpenworkMcpAppLaunchReference,
+  type OpenworkMcpAppResource,
+  type OpenworkMcpAppToolResult,
+} from "@/app/lib/openwork-server"
 import { useWorkspace } from "@/react-app/shell/workspace-provider"
 import { cn } from "@/lib/utils"
 import {
@@ -30,9 +35,14 @@ const ACTIONABLE_MCP_APP_RESOLUTION_CODES = new Set([
   "invalid_resource_csp",
   "invalid_resource_mime",
   "invalid_resource_uri",
+  "invalid_launch_reference",
   "resource_read_failed",
   "resource_too_large",
+  "server_unavailable",
   "tool_denied",
+  "tool_not_found",
+  "tool_not_visible",
+  "tool_resource_mismatch",
   "unsupported_resource_permissions",
 ])
 
@@ -60,6 +70,21 @@ function preservedResult(part: DynamicToolUIPart): PreservedMcpAppResult | null 
     content,
     ...(isRecord(result.structuredContent) ? { structuredContent: result.structuredContent } : {}),
     ...(isRecord(result._meta) ? { _meta: result._meta } : {}),
+  }
+}
+
+export function gatewayMcpAppLaunch(meta: unknown): OpenworkMcpAppLaunchReference | null {
+  if (!isRecord(meta) || !isRecord(meta["openwork/mcpApp"])) return null
+  const launch = meta["openwork/mcpApp"]
+  if (typeof launch.connectionId !== "string"
+    || typeof launch.toolName !== "string"
+    || typeof launch.resourceUri !== "string"
+    || !isRecord(launch.arguments)) return null
+  return {
+    connectionId: launch.connectionId,
+    toolName: launch.toolName,
+    resourceUri: launch.resourceUri,
+    arguments: launch.arguments,
   }
 }
 
@@ -123,6 +148,7 @@ export function isActionableMcpAppResolutionError(cause: unknown): boolean {
 export function McpAppFrame({ part }: { part: DynamicToolUIPart }) {
   const { openworkServerClient, workspaceId } = useWorkspace()
   const result = useMemo(() => preservedResult(part), [part])
+  const launch = useMemo(() => gatewayMcpAppLaunch(result?._meta), [result])
   const iframeRef = useRef<HTMLIFrameElement>(null)
   const [app, setApp] = useState<OpenworkMcpAppResource | null>(null)
   const [height, setHeight] = useState(DEFAULT_HEIGHT)
@@ -136,7 +162,7 @@ export function McpAppFrame({ part }: { part: DynamicToolUIPart }) {
     setDetailsCopied(false)
     if (!result || !openworkServerClient || !workspaceId) return () => { cancelled = true }
     const startedAt = performance.now()
-    void openworkServerClient.resolveMcpApp(workspaceId, part.toolName)
+    void openworkServerClient.resolveMcpApp(workspaceId, part.toolName, launch ?? undefined)
       .then(({ app: resolved }) => {
         if (cancelled) return
         // A preserved MCP result is neutral transport data. A null resolution
@@ -161,7 +187,7 @@ export function McpAppFrame({ part }: { part: DynamicToolUIPart }) {
         }
       })
     return () => { cancelled = true }
-  }, [openworkServerClient, part.toolName, result, workspaceId])
+  }, [launch, openworkServerClient, part.toolName, result, workspaceId])
 
   useEffect(() => {
     const iframe = iframeRef.current
@@ -260,7 +286,7 @@ export function McpAppFrame({ part }: { part: DynamicToolUIPart }) {
       if (resourceDeliveryTimer !== undefined) window.clearTimeout(resourceDeliveryTimer)
       if (initializeTimer !== undefined) window.clearTimeout(initializeTimer)
       void bridge.sendToolInput({
-        arguments: isRecord(part.input) ? part.input : {},
+        arguments: launch?.arguments ?? (isRecord(part.input) ? part.input : {}),
       }).then(() => bridge.sendToolResult({
         content: result.content as CallToolResult["content"],
         ...(result.structuredContent ? { structuredContent: result.structuredContent } : {}),
@@ -403,7 +429,7 @@ export function McpAppFrame({ part }: { part: DynamicToolUIPart }) {
         new Promise<void>((resolve) => window.setTimeout(resolve, 500)),
       ]).catch(() => undefined).finally(() => bridge.close().catch(() => undefined))
     }
-  }, [app, openworkServerClient, part.input, result, workspaceId])
+  }, [app, launch, openworkServerClient, part.input, result, workspaceId])
 
   if (!result || (!app && !error)) return null
   if (error) {

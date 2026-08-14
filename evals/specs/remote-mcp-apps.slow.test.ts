@@ -18,7 +18,7 @@ const title = !appSpecsEnabled
     ? "Remote MCP Apps skipped — needs local placement without OPENWORK_EVAL_DEN_API_URL"
     : !mysqlOpen
       ? "Remote MCP Apps skipped — needs MySQL on 127.0.0.1:3306"
-      : "agents install external MCP Apps while Apps use standard same-server capability search";
+      : "agents discover and open standard MCP Apps through capability search while installed Apps use same-server tools";
 const providerId = "remote-mcp-apps-provider";
 const modelId = "remote-mcp-apps-model";
 const desktopClosingReply = "Project Atlas is open through its standard MCP server.";
@@ -135,9 +135,20 @@ function projectedLaunchTool(payload: Record<string, unknown>, preferInstalled: 
   return preferInstalled ? staticAdapterTool : connectedTool ?? staticAdapterTool;
 }
 
-function hasToolResult(payload: Record<string, unknown>) {
+function toolResultCount(payload: Record<string, unknown>) {
   return Array.isArray(payload.messages)
-    && payload.messages.some((message) => isRecord(message) && message.role === "tool");
+    ? payload.messages.filter((message) => isRecord(message) && message.role === "tool").length
+    : 0;
+}
+
+function projectedToolEnding(payload: Record<string, unknown>, ending: string) {
+  if (!Array.isArray(payload.tools)) return null;
+  for (const tool of payload.tools) {
+    if (!isRecord(tool) || !isRecord(tool.function)) continue;
+    const name = tool.function.name;
+    if (typeof name === "string" && name.endsWith(ending)) return name;
+  }
+  return null;
 }
 
 const builtPortableApp = await buildGeneratedArtifactViewInWorker({
@@ -461,6 +472,7 @@ test.skipIf(!appSpecsEnabled || !localPlacement || !mysqlOpen)(title, { timeout:
   let sourceAvailable = true;
   let standardMcpCalls = 0;
   let agentMcpUpstream: { token: string; staticUrl: string; connectedUrl: string } | null = null;
+  let gatewayCapabilityName: string | null = null;
   const fixture = createServer((request, response) => {
     void (async () => {
       const url = new URL(request.url ?? "/", "http://127.0.0.1");
@@ -489,7 +501,8 @@ test.skipIf(!appSpecsEnabled || !localPlacement || !mysqlOpen)(title, { timeout:
           sendStream(response, [streamChunk({ role: "assistant" }), streamChunk({ content: "Project Atlas" }), streamChunk({}, "stop")]);
           return;
         }
-        if (hasToolResult(payload)) {
+        const completedTools = toolResultCount(payload);
+        if ((installedRequest && completedTools > 0) || (!installedRequest && completedTools > 1)) {
           sendStream(response, [
             streamChunk({ role: "assistant" }),
             streamChunk({ content: installedRequest ? installedClosingReply : desktopClosingReply }),
@@ -497,8 +510,13 @@ test.skipIf(!appSpecsEnabled || !localPlacement || !mysqlOpen)(title, { timeout:
           ]);
           return;
         }
-        const toolName = projectedLaunchTool(payload, installedRequest);
-        if (!toolName) throw new Error("The Remote MCP App launch tool was not projected to the model.");
+        const toolName = installedRequest
+          ? projectedLaunchTool(payload, true)
+          : projectedToolEnding(payload, completedTools === 0 ? "_search_capabilities" : "_execute_capability");
+        if (!toolName) throw new Error("The Remote MCP App capability gateway tools were not projected to the model.");
+        if (!installedRequest && completedTools === 1 && !gatewayCapabilityName) {
+          throw new Error("The Project Atlas gateway capability was not configured.");
+        }
         sendStream(response, [
           streamChunk({ role: "assistant" }),
           streamChunk({
@@ -508,7 +526,11 @@ test.skipIf(!appSpecsEnabled || !localPlacement || !mysqlOpen)(title, { timeout:
               type: "function",
               function: {
                 name: toolName,
-                arguments: installedRequest ? JSON.stringify({ input: { query: "migration" } }) : "{}",
+                arguments: installedRequest
+                  ? JSON.stringify({ input: { query: "migration" } })
+                  : completedTools === 0
+                    ? JSON.stringify({ query: "open Project Atlas", type: "mcp", limit: 5 })
+                    : JSON.stringify({ name: gatewayCapabilityName, body: {} }),
               },
             }],
           }),
@@ -620,6 +642,7 @@ test.skipIf(!appSpecsEnabled || !localPlacement || !mysqlOpen)(title, { timeout:
     credentialMode: "shared",
     access: { orgWide: true },
   });
+  gatewayCapabilityName = `mcp:${connection.id}:open_project_atlas`;
 
   const pluginResult = await denFetch(den.admin, "/v1/plugins", {
     method: "POST",
@@ -820,6 +843,18 @@ test.skipIf(!appSpecsEnabled || !localPlacement || !mysqlOpen)(title, { timeout:
   expect(JSON.stringify(connectRun.structuredContent)).toContain("Atlas migration");
   expect(standardMcpCalls).toBe(3);
 
+  const appSearch = await agentRpc(den.ref.apiUrl, mcpToken, "tools/call", {
+    name: "search_capabilities",
+    arguments: { query: "open Project Atlas", type: "mcp", limit: 5 },
+  });
+  const appMatches = Array.isArray(requireRecord(appSearch.structuredContent, "MCP App search").matches)
+    ? (requireRecord(appSearch.structuredContent, "MCP App search").matches as unknown[]).filter(isRecord)
+    : [];
+  expect(appMatches.find((match) => match.name === gatewayCapabilityName)).toMatchObject({
+    kind: "mcp_app",
+    mcpApp: { resourceUri: connectedResourceUri },
+  });
+
   const resources = await agentRpc(den.ref.apiUrl, mcpToken, "resources/list", {});
   expect(Array.isArray(resources.resources) && resources.resources.some((resource) => isRecord(resource) && resource.uri === firstResourceUri)).toBe(true);
   expect(Array.isArray(resources.resources) && resources.resources.some((resource) => isRecord(resource) && resource.uri === "openwork://connect/mcp-servers/index.json")).toBe(true);
@@ -919,7 +954,7 @@ test.skipIf(!appSpecsEnabled || !localPlacement || !mysqlOpen)(title, { timeout:
               enabled: true,
               oauth: false,
             },
-            "project-atlas-connect": {
+            [${JSON.stringify(`openwork-connect-${createHash("sha256").update(connection.id).digest("hex").slice(0, 12)}`)}]: {
               type: "remote",
               url: ${JSON.stringify(`${fixtureUrl}/connected-mcp`)},
               enabled: true,
@@ -1011,7 +1046,7 @@ test.skipIf(!appSpecsEnabled || !localPlacement || !mysqlOpen)(title, { timeout:
     const messagesPayload = await messagesResponse.json();
     for (const message of Array.isArray(messagesPayload?.items) ? messagesPayload.items : []) {
       for (const part of Array.isArray(message?.parts) ? message.parts : []) {
-        if (part && typeof part.tool === "string" && part.tool.includes("open_project_atlas")) {
+        if (part && typeof part.tool === "string" && part.tool.endsWith("_execute_capability")) {
           return JSON.stringify({ tool: part.tool, state: part.state });
         }
       }
@@ -1019,7 +1054,7 @@ test.skipIf(!appSpecsEnabled || !localPlacement || !mysqlOpen)(title, { timeout:
     return JSON.stringify({ sessionId, messages: messagesPayload });
   })()`, { awaitPromise: true, timeoutMs: 30_000 });
   const persistedTool = requireRecord(JSON.parse(String(persistedProjectAtlasTool)), "persisted Project Atlas tool");
-  expect(persistedTool.tool).toBe("project-atlas-connect_open_project_atlas");
+  expect(persistedTool.tool).toBe("openwork-cloud-apps_execute_capability");
   const persistedState = requireRecord(persistedTool.state, "persisted Project Atlas state");
   expect(persistedState.status).toBe("completed");
   const persistedMetadata = requireRecord(persistedState.metadata, "persisted Project Atlas metadata");
@@ -1029,7 +1064,15 @@ test.skipIf(!appSpecsEnabled || !localPlacement || !mysqlOpen)(title, { timeout:
     artifact: { title: "Project Atlas", description: "A standard MCP App served through OpenWork Connect." },
     data: { name: "Project Atlas", status: "Connected through OpenWork Connect" },
   });
-  expect(persistedMcpResult._meta).toEqual({ source: "project-atlas-standard-mcp" });
+  expect(persistedMcpResult._meta).toEqual({
+    source: "project-atlas-standard-mcp",
+    "openwork/mcpApp": {
+      connectionId: connection.id,
+      toolName: "open_project_atlas",
+      resourceUri: connectedResourceUri,
+      arguments: {},
+    },
+  });
   await waitFor(desktopApp, `Boolean(document.querySelector(${JSON.stringify(`[data-mcp-app-resource="${connectedResourceUri}"] iframe`)}))`, {
     timeoutMs: 60_000,
     label: "connected standard MCP App sandboxed iframe",
@@ -1043,6 +1086,8 @@ test.skipIf(!appSpecsEnabled || !localPlacement || !mysqlOpen)(title, { timeout:
   const desktopShot = await screenshot(desktopApp);
   const desktopExpectations = [
     "The conversation visibly contains the connected Project Atlas MCP App",
+    "The user requested Project Atlas naturally without a generated native tool name",
+    "OpenWork searched and executed the exact connected capability through the gateway",
     "The app was loaded from the standard ui://project-atlas/view.html resource",
     `The assistant says ${desktopClosingReply}`,
     "No interactive-view-unavailable or crash message is visible",

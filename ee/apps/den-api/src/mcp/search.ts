@@ -42,6 +42,8 @@ export type CapabilityMatch = {
   scriptPath?: string
   /** Callable capability or a source-specific advisory/content kind. */
   kind?: string
+  /** Standard MCP App binding advertised by the matched provider tool. */
+  mcpApp?: { resourceUri: string }
 }
 
 export function compareCapabilityMatches(a: CapabilityMatch, b: CapabilityMatch): number {

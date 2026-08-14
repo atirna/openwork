@@ -23,6 +23,7 @@ import { addMcp, listMcp, removeMcp, setMcpEnabled } from "./mcp.js";
 import {
   callMcpAppTool,
   McpAppHostError,
+  resolveConnectMcpAppResource,
   resolveMcpAppResource,
 } from "./mcp-app-host.js";
 import {
@@ -2906,13 +2907,27 @@ function createRoutes(
     const workspace = await resolveWorkspace(config, ctx.params.id);
     const body = await readJsonBody(ctx.request);
     const projectedToolName = typeof body.projectedToolName === "string" ? body.projectedToolName.trim() : "";
+    const launch = body.launch && typeof body.launch === "object" && !Array.isArray(body.launch)
+      ? body.launch as Record<string, unknown>
+      : null;
     try {
-      const app = await resolveMcpAppResource({
-        serverConfig: config,
-        workspaceId: workspace.id,
-        workspaceRoot: workspace.path,
-        projectedToolName,
-      });
+      const app = launch
+        ? await resolveConnectMcpAppResource({
+            serverConfig: config,
+            workspaceId: workspace.id,
+            workspaceRoot: workspace.path,
+            launch: {
+              connectionId: typeof launch.connectionId === "string" ? launch.connectionId : "",
+              toolName: typeof launch.toolName === "string" ? launch.toolName : "",
+              resourceUri: typeof launch.resourceUri === "string" ? launch.resourceUri : "",
+            },
+          })
+        : await resolveMcpAppResource({
+            serverConfig: config,
+            workspaceId: workspace.id,
+            workspaceRoot: workspace.path,
+            projectedToolName,
+          });
       return jsonResponse({ app });
     } catch (error) {
       rethrowMcpAppHostError(error);

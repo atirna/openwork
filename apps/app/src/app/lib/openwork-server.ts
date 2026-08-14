@@ -413,6 +413,13 @@ export type OpenworkMcpAppResource = {
   prefersBorder: boolean;
 };
 
+export type OpenworkMcpAppLaunchReference = {
+  connectionId: string;
+  toolName: string;
+  resourceUri: string;
+  arguments: Record<string, unknown>;
+};
+
 export type OpenworkMcpAppToolResult = {
   content: Array<Record<string, unknown>>;
   structuredContent?: Record<string, unknown>;
@@ -1916,7 +1923,11 @@ export function createOpenworkServerClient(options: { baseUrl: string; token?: s
         `/workspace/${workspaceId}/mcp`,
         { token, hostToken },
       ),
-    resolveMcpApp: (workspaceId: string, projectedToolName: string) =>
+    resolveMcpApp: (
+      workspaceId: string,
+      projectedToolName: string,
+      launch?: OpenworkMcpAppLaunchReference,
+    ) =>
       requestJson<{ app: OpenworkMcpAppResource | null }>(
         baseUrl,
         `/workspace/${encodeURIComponent(workspaceId)}/mcp-apps/resolve`,
@@ -1924,7 +1935,7 @@ export function createOpenworkServerClient(options: { baseUrl: string; token?: s
           token,
           hostToken,
           method: "POST",
-          body: { projectedToolName },
+          body: { projectedToolName, ...(launch ? { launch } : {}) },
           timeoutMs: timeouts.config,
         },
       ),
