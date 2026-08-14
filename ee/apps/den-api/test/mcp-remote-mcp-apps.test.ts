@@ -15,7 +15,9 @@ process.env.DATABASE_URL ??= "mysql://root:password@127.0.0.1:3306/openwork_den"
 const {
   IMPORT_REMOTE_MCP_APP_TOOL_NAME,
   registerAgentRemoteMcpApps,
+  remoteMcpAppCapabilityName,
   remoteMcpAppLaunchToolName,
+  searchRemoteMcpApps,
 } = await import("../src/mcp/remote-mcp-apps.js")
 const { remoteMcpAppResourceUri } = await import("../src/remote-mcp-apps.js")
 
@@ -102,7 +104,7 @@ test("advertises one standard tool with the exact immutable ui resource", async 
   await withClient(async (client) => {
     const tools = await client.listTools()
     const launch = tools.tools.find((tool) => tool.name === remoteMcpAppLaunchToolName(configObjectId))
-    expect(launch?._meta).toMatchObject({ ui: { resourceUri, visibility: ["model", "app"] } })
+    expect(launch?._meta).toMatchObject({ ui: { resourceUri, visibility: ["app"] } })
     expect(tools.tools).toHaveLength(1)
 
     const resources = await client.listResources()
@@ -115,6 +117,16 @@ test("advertises one standard tool with the exact immutable ui resource", async 
       }),
     }))
   })
+})
+
+test("discovers installed URL apps through the MCP capability catalog", () => {
+  const matches = searchRemoteMcpApps([activeApp as never], "open Project Atlas", 5, "mcp")
+  expect(matches).toContainEqual(expect.objectContaining({
+    name: remoteMcpAppCapabilityName(configObjectId),
+    kind: "mcp_app",
+    mcpApp: { resourceUri },
+  }))
+  expect(searchRemoteMcpApps([activeApp as never], "Project Atlas", 5, "api")).toEqual([])
 })
 
 test("serves exact cached bytes and delivers launch data through structuredContent", async () => {

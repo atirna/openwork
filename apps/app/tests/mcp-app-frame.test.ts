@@ -56,6 +56,20 @@ describe("MCP App iframe policy", () => {
     })).toBeNull()
   })
 
+  test("accepts a same-server installed App launch without a connection reference", () => {
+    expect(gatewayMcpAppLaunch({
+      "openwork/mcpApp": {
+        toolName: "launch_remote_app_atlas",
+        resourceUri: "ui://openwork/remote-apps/atlas/1/index.html",
+        arguments: { input: { query: "migration" } },
+      },
+    })).toEqual({
+      toolName: "launch_remote_app_atlas",
+      resourceUri: "ui://openwork/remote-apps/atlas/1/index.html",
+      arguments: { input: { query: "migration" } },
+    })
+  })
+
   test("uses the opaque message origin for packaged file hosts", () => {
     expect(normalizeMcpAppHostOrigin("file://")).toBe("null")
     expect(normalizeMcpAppHostOrigin("null")).toBe("null")

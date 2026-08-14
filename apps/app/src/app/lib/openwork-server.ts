@@ -414,7 +414,7 @@ export type OpenworkMcpAppResource = {
 };
 
 export type OpenworkMcpAppLaunchReference = {
-  connectionId: string;
+  connectionId?: string;
   toolName: string;
   resourceUri: string;
   arguments: Record<string, unknown>;

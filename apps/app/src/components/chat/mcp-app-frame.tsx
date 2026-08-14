@@ -76,12 +76,12 @@ function preservedResult(part: DynamicToolUIPart): PreservedMcpAppResult | null 
 export function gatewayMcpAppLaunch(meta: unknown): OpenworkMcpAppLaunchReference | null {
   if (!isRecord(meta) || !isRecord(meta["openwork/mcpApp"])) return null
   const launch = meta["openwork/mcpApp"]
-  if (typeof launch.connectionId !== "string"
+  if ((launch.connectionId !== undefined && typeof launch.connectionId !== "string")
     || typeof launch.toolName !== "string"
     || typeof launch.resourceUri !== "string"
     || !isRecord(launch.arguments)) return null
   return {
-    connectionId: launch.connectionId,
+    ...(typeof launch.connectionId === "string" ? { connectionId: launch.connectionId } : {}),
     toolName: launch.toolName,
     resourceUri: launch.resourceUri,
     arguments: launch.arguments,

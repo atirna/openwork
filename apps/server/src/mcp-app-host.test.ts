@@ -18,6 +18,7 @@ import {
   projectedMcpToolName,
   resolveConnectMcpAppResource,
   resolveMcpAppResource,
+  resolveSameServerMcpAppResource,
   toolUiResourceUri,
 } from "./mcp-app-host.js";
 import type { ServerConfig } from "./types.js";
@@ -258,6 +259,26 @@ describe("MCP Apps host transport", () => {
     expect(app).toMatchObject({
       serverName,
       toolName: "render_fixture",
+      resourceUri: RESOURCE_URI,
+      html: RESOURCE_HTML,
+    });
+  });
+
+  test("resolves an installed URL App through its same-server capability gateway", async () => {
+    const { config, root } = await configuredFixture("openwork-mcp-app-host-same-server-");
+    const app = await resolveSameServerMcpAppResource({
+      serverConfig: config,
+      workspaceId: WORKSPACE_ID,
+      workspaceRoot: root,
+      projectedToolName: "fixture_import_remote_mcp_app",
+      launch: {
+        toolName: "read_bound_detail",
+        resourceUri: RESOURCE_URI,
+      },
+    });
+    expect(app).toMatchObject({
+      serverName: "fixture",
+      toolName: "read_bound_detail",
       resourceUri: RESOURCE_URI,
       html: RESOURCE_HTML,
     });

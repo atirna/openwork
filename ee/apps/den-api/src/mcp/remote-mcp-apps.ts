@@ -8,7 +8,14 @@ import type { McpUiResourceMeta } from "@modelcontextprotocol/ext-apps"
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js"
 import { z } from "zod"
 import type { listActiveRemoteMcpApps } from "../remote-mcp-apps.js"
-import { EXECUTE_CAPABILITY_TOOL_NAME, SEARCH_CAPABILITIES_TOOL_NAME } from "./search.js"
+import {
+  EXECUTE_CAPABILITY_TOOL_NAME,
+  SEARCH_CAPABILITIES_TOOL_NAME,
+  scoreText,
+  tokenize,
+  type CapabilityMatch,
+  type SearchCapabilityType,
+} from "./search.js"
 
 type ActiveRemoteMcpApp = Awaited<ReturnType<typeof listActiveRemoteMcpApps>>[number]
 export const IMPORT_REMOTE_MCP_APP_TOOL_NAME = "import_remote_mcp_app"
@@ -27,6 +34,65 @@ function stableSuffix(value: string, length = 12) {
 
 export function remoteMcpAppLaunchToolName(configObjectId: string) {
   return `launch_remote_app_${stableSuffix(configObjectId)}`
+}
+
+export function remoteMcpAppCapabilityName(configObjectId: string) {
+  return `remote_app:${configObjectId}`
+}
+
+export function searchRemoteMcpApps(
+  apps: ActiveRemoteMcpApp[],
+  query: string,
+  limit: number,
+  type: SearchCapabilityType = "all",
+): CapabilityMatch[] {
+  if (type !== "all" && type !== "mcp") return []
+  const queryTokens = tokenize(query)
+  return apps.map((app) => {
+    const metadata = app.payload.metadata
+    return {
+      name: remoteMcpAppCapabilityName(app.app.configObjectId),
+      method: "MCP",
+      path: app.resourceUri,
+      score: scoreText(tokenize(metadata.name), tokenize(metadata.description ?? ""), queryTokens, ["app", "open", "ui"]),
+      summary: metadata.launchTool?.description ?? metadata.description ?? `Open ${metadata.name}.`,
+      pathParams: [],
+      queryParams: [],
+      hasBody: true,
+      argumentsSchema: {
+        type: "object",
+        properties: { input: {} },
+        additionalProperties: false,
+      },
+      invocation: { argumentsField: "body" as const },
+      kind: "mcp_app",
+      mcpApp: { resourceUri: app.resourceUri },
+    }
+  }).filter((match) => match.score > 0)
+    .sort((a, b) => (b.score - a.score) || a.name.localeCompare(b.name))
+    .slice(0, Math.max(1, Math.min(20, limit)))
+}
+
+export function remoteMcpAppLaunchResult(app: ActiveRemoteMcpApp, launchInput?: unknown) {
+  const metadata = app.payload.metadata
+  const structuredContent = {
+    app: {
+      id: app.app.configObjectId,
+      name: metadata.name,
+      version: metadata.version,
+      revisionId: app.versionId,
+      resourceDigest: app.payload.resource.digest,
+    },
+    serverTools: {
+      searchCapabilities: SEARCH_CAPABILITIES_TOOL_NAME,
+      executeCapability: EXECUTE_CAPABILITY_TOOL_NAME,
+    },
+    ...(launchInput === undefined ? {} : { input: launchInput }),
+  }
+  return {
+    content: [{ type: "text" as const, text: `Opened ${metadata.name} ${metadata.version}.` }],
+    structuredContent,
+  }
 }
 
 function resourceMeta(revision: Pick<ActiveRemoteMcpApp, "payload">): { ui: McpUiResourceMeta; resourceDigest: string } {
@@ -137,28 +203,9 @@ export function registerAgentRemoteMcpApps(input: {
         description: metadata.launchTool?.description ?? metadata.description ?? `Open ${metadata.name}.`,
         annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
         inputSchema: z.object({ input: z.unknown().optional() }),
-        _meta: { ui: { resourceUri: app.resourceUri, visibility: ["model", "app"] } },
+        _meta: { ui: { resourceUri: app.resourceUri, visibility: ["app"] } },
       },
-      async ({ input: launchInput }) => {
-        const structuredContent = {
-          app: {
-            id: app.app.configObjectId,
-            name: metadata.name,
-            version: metadata.version,
-            revisionId: app.versionId,
-            resourceDigest: app.payload.resource.digest,
-          },
-          serverTools: {
-            searchCapabilities: SEARCH_CAPABILITIES_TOOL_NAME,
-            executeCapability: EXECUTE_CAPABILITY_TOOL_NAME,
-          },
-          ...(launchInput === undefined ? {} : { input: launchInput }),
-        }
-        return {
-          content: [{ type: "text" as const, text: `Opened ${metadata.name} ${metadata.version}.` }],
-          structuredContent,
-        }
-      },
+      async ({ input: launchInput }) => remoteMcpAppLaunchResult(app, launchInput),
     )
   }
 }

@@ -121,20 +121,6 @@ function sendStream(response: ServerResponse, chunks: Record<string, unknown>[])
   setTimeout(() => response.end("data: [DONE]\n\n"), delay);
 }
 
-function projectedLaunchTool(payload: Record<string, unknown>, preferInstalled: boolean) {
-  if (!Array.isArray(payload.tools)) return null;
-  let staticAdapterTool: string | null = null;
-  let connectedTool: string | null = null;
-  for (const tool of payload.tools) {
-    if (!isRecord(tool) || !isRecord(tool.function)) continue;
-    const name = tool.function.name;
-    if (typeof name !== "string") continue;
-    if (name.includes("open_project_atlas")) connectedTool = name;
-    if (name.includes("launch_remote_app_")) staticAdapterTool = name;
-  }
-  return preferInstalled ? staticAdapterTool : connectedTool ?? staticAdapterTool;
-}
-
 function toolResultCount(payload: Record<string, unknown>) {
   return Array.isArray(payload.messages)
     ? payload.messages.filter((message) => isRecord(message) && message.role === "tool").length
@@ -473,6 +459,7 @@ test.skipIf(!appSpecsEnabled || !localPlacement || !mysqlOpen)(title, { timeout:
   let standardMcpCalls = 0;
   let agentMcpUpstream: { token: string; staticUrl: string; connectedUrl: string } | null = null;
   let gatewayCapabilityName: string | null = null;
+  let installedCapabilityName: string | null = null;
   const fixture = createServer((request, response) => {
     void (async () => {
       const url = new URL(request.url ?? "/", "http://127.0.0.1");
@@ -502,7 +489,7 @@ test.skipIf(!appSpecsEnabled || !localPlacement || !mysqlOpen)(title, { timeout:
           return;
         }
         const completedTools = toolResultCount(payload);
-        if ((installedRequest && completedTools > 0) || (!installedRequest && completedTools > 1)) {
+        if (completedTools > 1) {
           sendStream(response, [
             streamChunk({ role: "assistant" }),
             streamChunk({ content: installedRequest ? installedClosingReply : desktopClosingReply }),
@@ -510,11 +497,9 @@ test.skipIf(!appSpecsEnabled || !localPlacement || !mysqlOpen)(title, { timeout:
           ]);
           return;
         }
-        const toolName = installedRequest
-          ? projectedLaunchTool(payload, true)
-          : projectedToolEnding(payload, completedTools === 0 ? "_search_capabilities" : "_execute_capability");
+        const toolName = projectedToolEnding(payload, completedTools === 0 ? "_search_capabilities" : "_execute_capability");
         if (!toolName) throw new Error("The Remote MCP App capability gateway tools were not projected to the model.");
-        if (!installedRequest && completedTools === 1 && !gatewayCapabilityName) {
+        if (completedTools === 1 && !(installedRequest ? installedCapabilityName : gatewayCapabilityName)) {
           throw new Error("The Project Atlas gateway capability was not configured.");
         }
         sendStream(response, [
@@ -526,11 +511,12 @@ test.skipIf(!appSpecsEnabled || !localPlacement || !mysqlOpen)(title, { timeout:
               type: "function",
               function: {
                 name: toolName,
-                arguments: installedRequest
-                  ? JSON.stringify({ input: { query: "migration" } })
-                  : completedTools === 0
-                    ? JSON.stringify({ query: "open Project Atlas", type: "mcp", limit: 5 })
-                    : JSON.stringify({ name: gatewayCapabilityName, body: {} }),
+                arguments: completedTools === 0
+                  ? JSON.stringify({ query: installedRequest ? "open installed Project Atlas" : "open Project Atlas", type: "mcp", limit: 5 })
+                  : JSON.stringify({
+                      name: installedRequest ? installedCapabilityName : gatewayCapabilityName,
+                      body: installedRequest ? { input: { query: "migration" } } : {},
+                    }),
               },
             }],
           }),
@@ -797,11 +783,22 @@ test.skipIf(!appSpecsEnabled || !localPlacement || !mysqlOpen)(title, { timeout:
   expect(launchTool).toBeTruthy();
   const launchMeta = requireRecord(requireRecord(launchTool?._meta, "launch metadata").ui, "launch UI metadata");
   expect(launchMeta.resourceUri).toBe(firstResourceUri);
+  expect(launchMeta.visibility).toEqual(["app"]);
   const launchToolName = String(launchTool?.name ?? "");
 
+  const installedSearch = await agentRpc(den.ref.apiUrl, mcpToken, "tools/call", {
+    name: "search_capabilities",
+    arguments: { query: "open installed Project Atlas", type: "mcp", limit: 5 },
+  });
+  const installedMatches = Array.isArray(requireRecord(installedSearch.structuredContent, "installed App search").matches)
+    ? (requireRecord(installedSearch.structuredContent, "installed App search").matches as unknown[]).filter(isRecord)
+    : [];
+  const installedMatch = requireRecord(installedMatches.find((match) => match.kind === "mcp_app" && String(match.name ?? "").startsWith("remote_app:")), "installed App match");
+  installedCapabilityName = String(installedMatch.name);
+  expect(installedMatch.mcpApp).toEqual({ resourceUri: firstResourceUri });
   const launched = await agentRpc(den.ref.apiUrl, mcpToken, "tools/call", {
-    name: launchToolName,
-    arguments: { input: { query: "migration" } },
+    name: "execute_capability",
+    arguments: { name: installedCapabilityName, body: { input: { query: "migration" } } },
   });
   const launchStructured = requireRecord(launched.structuredContent, "launch structured content");
   expect(JSON.stringify(launchStructured)).not.toContain(connection.id);
@@ -809,6 +806,11 @@ test.skipIf(!appSpecsEnabled || !localPlacement || !mysqlOpen)(title, { timeout:
   expect(requireRecord(launchStructured.serverTools, "launch server tools")).toEqual({
     searchCapabilities: "search_capabilities",
     executeCapability: "execute_capability",
+  });
+  expect(requireRecord(launched._meta, "installed launch metadata")["openwork/mcpApp"]).toEqual({
+    toolName: String(launchTool?.name ?? ""),
+    resourceUri: firstResourceUri,
+    arguments: { input: { query: "migration" } },
   });
 
   const programSearch = await agentRpc(den.ref.apiUrl, mcpToken, "tools/call", {

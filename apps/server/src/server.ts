@@ -25,6 +25,7 @@ import {
   McpAppHostError,
   resolveConnectMcpAppResource,
   resolveMcpAppResource,
+  resolveSameServerMcpAppResource,
 } from "./mcp-app-host.js";
 import {
   buildMcpAppSandboxCsp,
@@ -2911,7 +2912,7 @@ function createRoutes(
       ? body.launch as Record<string, unknown>
       : null;
     try {
-      const app = launch
+      const app = launch && typeof launch.connectionId === "string"
         ? await resolveConnectMcpAppResource({
             serverConfig: config,
             workspaceId: workspace.id,
@@ -2922,6 +2923,17 @@ function createRoutes(
               resourceUri: typeof launch.resourceUri === "string" ? launch.resourceUri : "",
             },
           })
+        : launch
+          ? await resolveSameServerMcpAppResource({
+              serverConfig: config,
+              workspaceId: workspace.id,
+              workspaceRoot: workspace.path,
+              projectedToolName,
+              launch: {
+                toolName: typeof launch.toolName === "string" ? launch.toolName : "",
+                resourceUri: typeof launch.resourceUri === "string" ? launch.resourceUri : "",
+              },
+            })
         : await resolveMcpAppResource({
             serverConfig: config,
             workspaceId: workspace.id,

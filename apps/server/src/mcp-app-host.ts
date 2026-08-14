@@ -41,6 +41,11 @@ export type ConnectMcpAppLaunchReference = {
   resourceUri: string;
 };
 
+export type SameServerMcpAppLaunchReference = {
+  toolName: string;
+  resourceUri: string;
+};
+
 export class McpAppHostError extends Error {
   constructor(
     readonly code: string,
@@ -384,6 +389,73 @@ export async function resolveConnectMcpAppResource(input: {
       ...presentation,
     };
   });
+}
+
+/** Resolve an indirect launch against the same MCP server that owns the
+ * model-visible capability gateway tool. The target launch tool stays
+ * app-visible, but its standard UI binding and resource are revalidated live.
+ */
+export async function resolveSameServerMcpAppResource(input: {
+  serverConfig: ServerConfig;
+  workspaceId: string;
+  workspaceRoot: string;
+  projectedToolName: string;
+  launch: SameServerMcpAppLaunchReference;
+}): Promise<McpAppResource> {
+  if (!/^[a-zA-Z0-9_-]{1,256}$/.test(input.projectedToolName)) {
+    throw new McpAppHostError("invalid_tool_name", "Projected MCP tool name is invalid.");
+  }
+  if (!/^[^\s]{1,256}$/.test(input.launch.toolName)) {
+    throw new McpAppHostError("invalid_launch_reference", "The MCP App tool reference is invalid.");
+  }
+  if (!input.launch.resourceUri.startsWith("ui://") || input.launch.resourceUri.length > 2_048) {
+    throw new McpAppHostError("invalid_resource_uri", "MCP App resource URI must use ui://.");
+  }
+
+  const configured = await listMcp(input.serverConfig, input.workspaceId, input.workspaceRoot);
+  const candidates = configured.filter((item) => (
+    item.config.enabled !== false
+    && remoteUrl(item.config)
+    && input.projectedToolName.startsWith(`${item.name.replace(/[^a-zA-Z0-9_-]/g, "_")}_`)
+  ));
+  const matches: McpAppResource[] = [];
+  for (const item of candidates) {
+    const match = await withRemoteClient(item.config, async (client) => {
+      const tools = await listTools(client);
+      const gatewayTool = tools.find((tool) => projectedMcpToolName(item.name, tool.name) === input.projectedToolName);
+      if (!gatewayTool || !toolVisibility(gatewayTool, "model")) return null;
+      const launchTool = tools.find((tool) => tool.name === input.launch.toolName);
+      if (!launchTool) throw new McpAppHostError("tool_not_found", "The same-server MCP App tool is no longer advertised.");
+      if (!toolVisibility(launchTool, "app")) {
+        throw new McpAppHostError("tool_not_visible", "The same-server MCP App tool is not visible to apps.");
+      }
+      const resourceUri = toolUiResourceUri(launchTool);
+      if (resourceUri !== input.launch.resourceUri) {
+        throw new McpAppHostError("tool_resource_mismatch", "The same-server MCP App tool now advertises a different resource.");
+      }
+      const projectedLaunchName = projectedMcpToolName(item.name, launchTool.name);
+      if ((await diagnoseMcpToolDenies(input.workspaceRoot, item.name, [projectedLaunchName])).length > 0) {
+        throw new McpAppHostError("tool_denied", "This MCP App tool is denied by the workspace tool policy.");
+      }
+      const read = await client.readResource({ uri: resourceUri }).catch(() => {
+        throw new McpAppHostError("resource_read_failed", "The MCP App resource could not be loaded from its same-server provider.");
+      });
+      const resource = findHtmlResource(resourceUri, read);
+      return {
+        serverName: item.name,
+        toolName: launchTool.name,
+        resourceUri,
+        html: resource.html,
+        ...resourcePresentationMeta(resource.meta),
+      } satisfies McpAppResource;
+    });
+    if (match) matches.push(match);
+  }
+  if (matches.length > 1) {
+    throw new McpAppHostError("ambiguous_tool", "More than one configured MCP server matches this capability gateway launch.");
+  }
+  if (!matches[0]) throw new McpAppHostError("server_unavailable", "The MCP server that produced this App launch is unavailable.");
+  return matches[0];
 }
 
 export async function callMcpAppTool(input: {
