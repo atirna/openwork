@@ -118,6 +118,7 @@ import { cn } from "@/lib/utils"
 import { DevProfiler } from "@/react-app/shell/dev-profiler"
 import { groupMessages, isMessageGroup, getLastTextPart, getAggregateOnlyParts, getAssistantRenderGroups, getFileTitle, getMediaBadge, getMessageCompleted, getMessageCreated, formatMessageTimestamp, splitTurnAtAnswer, type UIMessageWithIndex, getMessagesText, getSafeFileDownloadUrl, getSafeFileRevealPath } from "./utils"
 import type { AnyToolPart } from "@/lib/tool-aggregate"
+import { resolveConnectorToolIdentity } from "@/react-app/domains/connections/connector-tool-identity"
 
 const SEARCH_HIGHLIGHT_MARK_CLASS = "rounded px-0.5 bg-amber-4/70 text-current"
 
@@ -174,7 +175,7 @@ class ToolMessage extends React.Component<ToolMessageProps, { failed: boolean }>
 }
 
 const ToolMessageInner = ({ part }: ToolMessageProps) => {
-  const { onMcpReconnect, onMcpReopenAuthorization, onMcpRetry } = useMessageList()
+  const { connectorIdentities, onMcpReconnect, onMcpReopenAuthorization, onMcpRetry } = useMessageList()
   const resolveLifecycle = useCurrentToolLifecycleResolver()
   const lifecycle = resolveLifecycle(part.toolCallId, isToolPartInFlight(part))
 
@@ -284,6 +285,7 @@ const ToolMessageInner = ({ part }: ToolMessageProps) => {
     return (
       <CapabilityCallLine
         part={part}
+        connector={resolveConnectorToolIdentity(part, connectorIdentities)}
         onReconnect={onMcpReconnect}
         onReopenAuthorization={onMcpReopenAuthorization}
         onRetry={onMcpRetry}

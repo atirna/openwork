@@ -53,6 +53,7 @@ import {
 export type DesktopConfigStore = {
   config: DenDesktopConfig;
   loading: boolean;
+  freshConfigStatus: "pending" | "ready" | "failed";
   refresh: () => Promise<void>;
   refreshFresh: () => Promise<DenDesktopConfig>;
   /**
@@ -83,6 +84,7 @@ const DESKTOP_CONFIG_ITEMS = [
   "brandIconUrl",
   "brandAccentColor",
   "automationsEnabled",
+  "dashboardEnabled",
   "connectEnabled",
   "onboardingPrompts",
   "onboardingPromptDescriptions",
@@ -201,6 +203,7 @@ async function reconcileShellBranding(latestConfig: DenDesktopConfig): Promise<v
 type DesktopConfigState = {
   config: DenDesktopConfig;
   loading: boolean;
+  freshConfigStatus: "pending" | "ready" | "failed";
 };
 
 /**
@@ -218,8 +221,9 @@ export function DesktopConfigProvider({ children }: DesktopConfigProviderProps) 
   const [desktopConfigState, setDesktopConfigState] = useState<DesktopConfigState>({
     config: DEFAULT_DESKTOP_CONFIG,
     loading: true,
+    freshConfigStatus: "pending",
   });
-  const { config, loading } = desktopConfigState;
+  const { config, freshConfigStatus, loading } = desktopConfigState;
   // Bumped whenever the browser tells us the Den session or settings changed.
   const [settingsVersion, bumpSettingsVersion] = useReducer((value: number) => value + 1, 0);
   // Monotonic run id — same guard-against-stale-resolution pattern as DenAuthProvider.
@@ -282,6 +286,7 @@ export function DesktopConfigProvider({ children }: DesktopConfigProviderProps) 
     if (import.meta.env.DEV && requireFresh && devRefreshDesktopConfigRef.current) {
       const nextConfig = devRefreshDesktopConfigRef.current;
       applyDesktopConfigActions(nextConfig);
+      setDesktopConfigState((current) => ({ ...current, freshConfigStatus: "ready" }));
       void reconcileShellBranding(nextConfig).catch(() => undefined);
       return nextConfig;
     }
@@ -294,7 +299,11 @@ export function DesktopConfigProvider({ children }: DesktopConfigProviderProps) 
 
     if (!isSignedIn || !token || !activeOrgId) {
       applyDesktopConfigActions(DEFAULT_DESKTOP_CONFIG);
-      setDesktopConfigState((current) => ({ ...current, loading: false }));
+      setDesktopConfigState((current) => ({
+        ...current,
+        freshConfigStatus: "failed",
+        loading: false,
+      }));
       return DEFAULT_DESKTOP_CONFIG;
     }
 
@@ -317,6 +326,7 @@ export function DesktopConfigProvider({ children }: DesktopConfigProviderProps) 
 
       writeCachedDenDesktopConfig(cacheKey, nextConfig);
       applyDesktopConfigActions(nextConfig);
+      setDesktopConfigState((current) => ({ ...current, freshConfigStatus: "ready" }));
       void reconcileShellBranding(nextConfig).catch(() => undefined);
       return nextConfig;
     } catch (error) {
@@ -339,6 +349,7 @@ export function DesktopConfigProvider({ children }: DesktopConfigProviderProps) 
 
       const fallbackConfig = cached ?? DEFAULT_DESKTOP_CONFIG;
       applyDesktopConfigActions(fallbackConfig);
+      setDesktopConfigState((current) => ({ ...current, freshConfigStatus: "failed" }));
       if (requireFresh) throw error;
       return fallbackConfig;
     } finally {
@@ -366,18 +377,35 @@ export function DesktopConfigProvider({ children }: DesktopConfigProviderProps) 
     // settingsVersion is read to tie this effect to settings-change events.
     void settingsVersion;
 
+    if (denAuth.status === "checking") {
+      setDesktopConfigState((current) => ({
+        ...current,
+        freshConfigStatus: "pending",
+        loading: true,
+      }));
+      return;
+    }
+
     if (!isSignedIn) {
       applyDesktopConfigActions(DEFAULT_DESKTOP_CONFIG);
-      setDesktopConfigState((current) => ({ ...current, loading: false }));
+      setDesktopConfigState((current) => ({
+        ...current,
+        freshConfigStatus: "failed",
+        loading: false,
+      }));
       return;
     }
 
     const cacheKey = getDenDesktopConfigCacheKey();
     const cached = readCachedDenDesktopConfig(cacheKey);
     applyDesktopConfigActions(cached ?? DEFAULT_DESKTOP_CONFIG);
-    setDesktopConfigState((current) => ({ ...current, loading: !cached }));
+    setDesktopConfigState((current) => ({
+      ...current,
+      freshConfigStatus: "pending",
+      loading: !cached,
+    }));
     void desktopConfigHandler();
-  }, [applyDesktopConfigActions, desktopConfigHandler, isSignedIn, settingsVersion]);
+  }, [applyDesktopConfigActions, denAuth.status, desktopConfigHandler, isSignedIn, settingsVersion]);
 
   useEffect(() => {
     if (typeof window === "undefined") return;
@@ -476,8 +504,16 @@ export function DesktopConfigProvider({ children }: DesktopConfigProviderProps) 
     // recent org restrictions without having to recompute every render.
     const checkRestriction: DesktopAppRestrictionChecker = ({ restriction }) =>
       checkDesktopAppRestriction({ config, restriction });
-    return { config, loading, refresh, refreshFresh, checkRestriction, connectPolicySync };
-  }, [config, loading, refresh, refreshFresh, connectPolicySync]);
+    return {
+      config,
+      freshConfigStatus,
+      loading,
+      refresh,
+      refreshFresh,
+      checkRestriction,
+      connectPolicySync,
+    };
+  }, [config, freshConfigStatus, loading, refresh, refreshFresh, connectPolicySync]);
 
   return (
     <DesktopConfigContext.Provider value={value}>

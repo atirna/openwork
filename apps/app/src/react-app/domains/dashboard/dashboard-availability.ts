@@ -1,17 +1,22 @@
-export const MCP_APPS_DASHBOARD_FLAG_KEY = "openwork.mcpAppsDashboard";
+import { useDesktopConfig } from "@/react-app/domains/cloud/desktop-config-provider";
+import { useDenAuth } from "@/react-app/domains/cloud/den-auth-provider";
 
 /**
- * Local opt-in flag for the MCP Apps dashboard. The dashboard, its sidebar
- * entry, and its route stay hidden unless this flag is explicitly enabled,
- * mirroring the `openwork.developerMode` local-flag pattern.
+ * Deployment-level Dashboard availability advertised by Den.
+ *
+ * Older Den versions and stale cached configs omit the field. Treat both as
+ * disabled so hosted and self-deployed installations stay fail-closed.
  */
-export function isMcpAppsDashboardEnabled(): boolean {
-  if (typeof window === "undefined") return false;
-  return window.localStorage.getItem(MCP_APPS_DASHBOARD_FLAG_KEY) === "1";
-}
-
-export function setMcpAppsDashboardEnabled(enabled: boolean): void {
-  if (typeof window === "undefined") return;
-  if (enabled) window.localStorage.setItem(MCP_APPS_DASHBOARD_FLAG_KEY, "1");
-  else window.localStorage.removeItem(MCP_APPS_DASHBOARD_FLAG_KEY);
+export function useDashboardDeploymentAvailability(): { enabled: boolean; loading: boolean } {
+  const { config, freshConfigStatus, loading } = useDesktopConfig();
+  const denAuth = useDenAuth();
+  const decisionPending = loading
+    || denAuth.status === "checking"
+    || freshConfigStatus === "pending";
+  return {
+    enabled: !decisionPending
+      && freshConfigStatus === "ready"
+      && config.dashboardEnabled === true,
+    loading: decisionPending,
+  };
 }

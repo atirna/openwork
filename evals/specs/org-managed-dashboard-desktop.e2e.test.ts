@@ -76,6 +76,7 @@ test(title, async ({ evidence, place }) => {
   needs(requirements);
   await using den = await server({
     place,
+    env: { DEN_DASHBOARDS_ENABLED: "true" },
     org: {
       name: `Managed Desktop dashboard ${Date.now()}`,
       admin: { name: "Managed Dashboard Admin" },
@@ -111,9 +112,6 @@ test(title, async ({ evidence, place }) => {
     den,
     as: "admin",
     place,
-    beforeSignIn: async (surface) => {
-      await evalIn(surface, `localStorage.setItem("openwork.mcpAppsDashboard", "1")`);
-    },
   });
   const dashboardHash = "#/dashboard";
   const dashboardOpened = await evalIn(desktop, `(() => {

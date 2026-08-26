@@ -114,6 +114,8 @@ import {
 } from "@/react-app/domains/connections/cloud-inventory-cache";
 import { connectPluginsForComposer, EMPTY_CONNECT_CAPABILITY_INVENTORY } from "@/react-app/domains/session/surface/connect-capability-inventory";
 import { consumeComposerAutoSend } from "./composer-auto-send";
+import { useOrgMcpConnections } from "@/react-app/domains/connections/use-org-mcp-connections";
+import { buildConnectorToolIdentities } from "@/react-app/domains/connections/connector-tool-identity";
 
 const EMPTY_TRANSCRIPT: UIMessage[] = [];
 const IDLE_STATUS: SessionStatus = { type: "idle" };
@@ -293,6 +295,31 @@ function createChatTranscriptEvalMessages(sessionId: string) {
   ];
 
   return { messages };
+}
+
+function createConnectorToolCallEvalMessages(sessionId: string): UIMessage[] {
+  const now = Date.now();
+  return [
+    {
+      id: `${sessionId}:eval-connector-user`,
+      role: "user",
+      parts: [{ type: "text", text: "Check my next Google Workspace calendar event." }],
+      metadata: { opencode: { created: now } },
+    },
+    {
+      id: `${sessionId}:eval-connector-assistant`,
+      role: "assistant",
+      parts: [{
+        type: "dynamic-tool",
+        toolName: "openwork-cloud_execute_capability",
+        toolCallId: "eval-connector-google-workspace",
+        state: "output-available",
+        input: { name: "getCapabilitiesGoogleWorkspaceCalendarEvents", body: {} },
+        output: JSON.stringify({ events: 1 }),
+      }],
+      metadata: { opencode: { created: now + 1, completed: now + 2_000 } },
+    },
+  ];
 }
 
 function createSessionLifecycleEvalMessages(sessionId: string): UIMessage[] {
@@ -793,6 +820,14 @@ export function SessionSurface(props: SessionSurfaceProps) {
   const [toolMcpStatus, setToolMcpStatus] = useState<string | null>(null);
   const [toolMcpStatuses, setToolMcpStatuses] = useState<McpStatusMap>({});
   const [toolImportedPlugins, setToolImportedPlugins] = useState<CloudImportedPlugin[]>([]);
+  const orgMcpConnections = useOrgMcpConnections();
+  const connectorIdentities = useMemo(
+    () => buildConnectorToolIdentities({
+      mcpServers: toolMcpServers,
+      orgConnections: orgMcpConnections.connections,
+    }),
+    [orgMcpConnections.connections, toolMcpServers],
+  );
   const skillsConnectPushRef = useRef(0);
   const mcpConnectPushRef = useRef(0);
   const pluginConnectPushRef = useRef(0);
@@ -1037,6 +1072,22 @@ export function SessionSurface(props: SessionSurfaceProps) {
     };
   }, [props.sessionId]);
   useControlAction(props.isControlTarget ? seedChatTranscriptControlAction : null);
+  const seedConnectorToolCallControlAction = useMemo<OpenworkControlAction | null>(() => {
+    if (!import.meta.env.DEV) return null;
+
+    return {
+      id: "eval.connector_tool_call.seed",
+      label: "Seed a branded connector tool call",
+      description: "Dev-only eval hook that renders a deterministic connector-backed capability call.",
+      sideEffect: "mutation",
+      disabled: !props.sessionId,
+      execute: () => {
+        setEvalMarkdownMessages(createConnectorToolCallEvalMessages(props.sessionId));
+        return { ok: true, connector: "Google Workspace" };
+      },
+    };
+  }, [props.sessionId]);
+  useControlAction(props.isControlTarget ? seedConnectorToolCallControlAction : null);
   const seedSessionLifecycleControlAction = useMemo<OpenworkControlAction | null>(() => {
     if (!import.meta.env.DEV) return null;
 
@@ -1079,6 +1130,35 @@ export function SessionSurface(props: SessionSurfaceProps) {
     };
   }, [props.sessionId, props.workspaceId]);
   useControlAction(props.isControlTarget ? seedSessionLifecycleControlAction : null);
+  const refreshCurrentSessionControlAction = useMemo<OpenworkControlAction | null>(() => {
+    if (!import.meta.env.DEV) return null;
+
+    return {
+      id: "eval.composer_focus.refresh_current_session",
+      label: "Refresh current session while composing",
+      description: "Dev-only eval hook that exercises a same-session snapshot refresh without changing tasks.",
+      sideEffect: "none",
+      disabled: !props.sessionId,
+      execute: async () => {
+        const editor = composerShellRef.current?.querySelector<HTMLElement>(
+          '[contenteditable="true"][data-lexical-editor="true"]',
+        );
+        const wasFocused = editor === document.activeElement;
+        const result = await snapshotQuery.refetch();
+        await new Promise<void>((resolve) => {
+          window.requestAnimationFrame(() => window.requestAnimationFrame(() => resolve()));
+        });
+
+        return {
+          ok: result.status === "success",
+          wasFocused,
+          remainsFocused: editor === document.activeElement,
+          editable: editor?.getAttribute("contenteditable") === "true",
+        };
+      },
+    };
+  }, [props.sessionId, snapshotQuery.refetch]);
+  useControlAction(props.isControlTarget ? refreshCurrentSessionControlAction : null);
   const openTargets = useMemo(() => deriveOpenTargets(renderedMessages), [renderedMessages]);
   const openTargetsFingerprint = useMemo(
     () => openTargets.map((target) => `${target.kind}:${target.value}:${target.confidence}`).join("|"),
@@ -2196,6 +2276,7 @@ export function SessionSurface(props: SessionSurfaceProps) {
                       developerMode={props.developerMode}
                       displaySuggestions={shellConfig.starterCards}
                       providerConnectedCount={props.providerConnectedCount ?? 0}
+                      connectorIdentities={connectorIdentities}
                       dispatchAction={handleMessageListDispatchAction}
                       setPrompt={handleMessageListSetPrompt}
                       onRevertToUserMessage={handleRevertToUserMessage}

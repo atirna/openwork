@@ -94,7 +94,7 @@ import { usePlatform } from "@/react-app/kernel/platform";
 import { SessionPage, type OpenSessionTab } from "@/react-app/domains/session/chat/session-page";
 import { AutomationsPage } from "@/react-app/domains/automations/automations-page";
 import { DashboardPage } from "@/react-app/domains/dashboard/dashboard-page";
-import { isMcpAppsDashboardEnabled } from "@/react-app/domains/dashboard/dashboard-availability";
+import { useDashboardDeploymentAvailability } from "@/react-app/domains/dashboard/dashboard-availability";
 import { useAutomationDeploymentEnabled } from "@/react-app/domains/automations/automation-availability";
 import { automationsStateChangedEvent } from "@/react-app/domains/automations/automation-events";
 import type { NewTaskComposerContext } from "@/react-app/domains/session/chat/new-task-composer";
@@ -497,8 +497,13 @@ export function SessionRoute() {
   const location = useLocation();
   const automationsRouteRequested = /^\/automations(?:\/|$)/.test(location.pathname);
   const dashboardRouteRequested = /^\/dashboard(?:\/|$)/.test(location.pathname);
-  const mcpAppsDashboardEnabled = isMcpAppsDashboardEnabled();
+  const {
+    enabled: mcpAppsDashboardEnabled,
+    loading: dashboardAvailabilityLoading,
+  } = useDashboardDeploymentAvailability();
   const dashboardRouteActive = mcpAppsDashboardEnabled && dashboardRouteRequested;
+  const dashboardWorkspaceRoute = dashboardRouteRequested
+    && (dashboardAvailabilityLoading || mcpAppsDashboardEnabled);
   const platform = usePlatform();
   const denAuth = useDenAuth();
   const { config: shellConfig } = useShellConfig();
@@ -514,9 +519,9 @@ export function SessionRoute() {
     navigate("/", { replace: true });
   }, [automationsEnabled, automationsRouteRequested, navigate]);
   useEffect(() => {
-    if (!dashboardRouteRequested || mcpAppsDashboardEnabled) return;
+    if (!dashboardRouteRequested || dashboardAvailabilityLoading || mcpAppsDashboardEnabled) return;
     navigate("/", { replace: true });
-  }, [dashboardRouteRequested, mcpAppsDashboardEnabled, navigate]);
+  }, [dashboardAvailabilityLoading, dashboardRouteRequested, mcpAppsDashboardEnabled, navigate]);
   useEffect(() => {
     const authToken = denSettings.authToken?.trim();
     const organizationId = denSettings.activeOrgId?.trim();
@@ -616,7 +621,7 @@ export function SessionRoute() {
     runRemoteWorkspaceConnectionCheck,
   } = useWorkspaceRouteState({
     developerMode,
-    workspaceRoute: automationsRouteActive ? "automations" : dashboardRouteActive ? "dashboard" : "session",
+    workspaceRoute: automationsRouteActive ? "automations" : dashboardWorkspaceRoute ? "dashboard" : "session",
     onServerSettingsChanged: () => setOpenworkServerSettingsVersion((value) => value + 1),
     onHostInfo: setOpenworkServerHostInfoState,
   });

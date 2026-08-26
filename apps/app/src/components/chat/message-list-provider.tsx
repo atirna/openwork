@@ -7,6 +7,7 @@ import type {
   ChatToolReconnectResult,
 } from "@/components/tools/error-attribution"
 import * as React from "react"
+import type { ConnectorToolIdentity } from "@/react-app/domains/connections/connector-tool-identity"
 
 interface MessageListContextValue {
   workspaceId: string
@@ -16,6 +17,7 @@ interface MessageListContextValue {
   developerMode: boolean
   displaySuggestions: boolean
   providerConnectedCount: number
+  connectorIdentities: ConnectorToolIdentity[]
   dispatchAction: (action: DispatchAction) => void
   setPrompt: (prompt: string) => void
   onRevertToUserMessage: (messageId: string) => void
@@ -52,6 +54,7 @@ interface MessageListProviderProps {
   onMcpRetry: (action: ChatToolReconnectAction) => void | Promise<void>
   displaySuggestions: boolean
   providerConnectedCount: number
+  connectorIdentities?: ConnectorToolIdentity[]
   dispatchAction: (action: DispatchAction) => void
   setPrompt: (prompt: string) => void
 }
@@ -71,6 +74,7 @@ export function MessageListProvider({
   developerMode,
   displaySuggestions,
   providerConnectedCount,
+  connectorIdentities = [],
   dispatchAction,
   setPrompt,
   onRevertToUserMessage,
@@ -141,6 +145,7 @@ export function MessageListProvider({
       developerMode,
       displaySuggestions,
       providerConnectedCount,
+      connectorIdentities,
       ...stableHandlers,
       onOpenSubagentSession: canOpenSubagentSession
         ? stableHandlers.onOpenSubagentSession
@@ -154,6 +159,7 @@ export function MessageListProvider({
       developerMode,
       displaySuggestions,
       providerConnectedCount,
+      connectorIdentities,
       stableHandlers,
       canOpenSubagentSession,
     ],

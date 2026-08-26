@@ -23,10 +23,6 @@ import {
 } from "@/app/lib/den-endpoint-sources";
 import { isDesktopRuntime } from "@/app/utils";
 import { t } from "@/i18n";
-import {
-  isMcpAppsDashboardEnabled,
-  setMcpAppsDashboardEnabled,
-} from "@/react-app/domains/dashboard/dashboard-availability";
 import { ControlPlaneUrlEditor } from "../cloud/control-plane-url-editor";
 import { usePlatform } from "../../../kernel/platform";
 import {
@@ -813,7 +809,6 @@ interface AdvancedDeveloperSectionProps {
 }
 
 export function AdvancedDeveloperSection(props: AdvancedDeveloperSectionProps) {
-  const [mcpAppsDashboard, setMcpAppsDashboard] = useState(isMcpAppsDashboardEnabled);
   return (
     <LayoutSection>
       <LayoutSectionHeader>
@@ -829,26 +824,6 @@ export function AdvancedDeveloperSection(props: AdvancedDeveloperSectionProps) {
               aria-label={t("settings.developer_mode_title")}
               checked={props.developerMode}
               onCheckedChange={props.onToggleDeveloperMode}
-            />
-          </LayoutSectionItemHeaderActions>
-        </LayoutSectionItemHeader>
-      </LayoutSectionItem>
-
-      <LayoutSectionItem>
-        <LayoutSectionItemHeader>
-          <LayoutSectionItemTitle>MCP Apps dashboard</LayoutSectionItemTitle>
-          <LayoutSectionItemDescription>
-            Show the experimental MCP Apps dashboard in the sidebar. Off by
-            default; tiles and added apps are kept when you turn it back on.
-          </LayoutSectionItemDescription>
-          <LayoutSectionItemHeaderActions>
-            <Switch
-              aria-label="MCP Apps dashboard"
-              checked={mcpAppsDashboard}
-              onCheckedChange={(checked) => {
-                setMcpAppsDashboardEnabled(checked === true);
-                setMcpAppsDashboard(checked === true);
-              }}
             />
           </LayoutSectionItemHeaderActions>
         </LayoutSectionItemHeader>
