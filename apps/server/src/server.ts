@@ -156,11 +156,14 @@ const OPENWORK_VOICE_TRANSCRIPTION_MODEL = "gpt-4o-transcribe";
 let desktopCloudSyncQueue: Promise<void> = Promise.resolve();
 const agentDiagnosticsLastRunByServer = new WeakMap<ServerConfig, Map<string, number>>();
 const agentDiagnosticsInFlightByServer = new WeakMap<ServerConfig, Set<string>>();
+const commandAdmissionsByServer = new WeakMap<ServerConfig, Map<string, { fingerprint: string; admittedAt: number }>>();
 const AGENT_DIAGNOSTICS_RATE_LIMIT_CAPACITY = 1_000;
 const AGENT_DIAGNOSTICS_MAX_IN_FLIGHT_PER_SERVER = 16;
 const AGENT_DIAGNOSTICS_MAX_REQUEST_BYTES = 256 * 1024;
 const AGENT_DIAGNOSTICS_DEFAULT_BODY_DEADLINE_MS = 2_000;
 const AGENT_DIAGNOSTICS_ERROR_FLUSH_MS = 25;
+const COMMAND_ADMISSION_CAPACITY = 10_000;
+const COMMAND_ADMISSION_TTL_MS = 24 * 60 * 60 * 1_000;
 
 function rethrowMcpAppHostError(error: unknown): never {
   if (!(error instanceof McpAppHostError)) throw error;
@@ -956,6 +959,43 @@ function isSessionCommandProxyRequest(method: string, proxyPath: string) {
   return method === "POST" && /^\/session\/[^/]+\/command$/.test(normalizeOpencodeProxyPath(proxyPath));
 }
 
+function commandAdmissionFromBody(body: ArrayBuffer | undefined): { messageId: string; fingerprint: string } | null {
+  if (!body) return null;
+  const text = new TextDecoder().decode(body);
+  try {
+    const value: unknown = JSON.parse(text);
+    if (!isRecord(value) || typeof value.messageID !== "string" || !value.messageID.trim()) return null;
+    return { messageId: value.messageID.trim(), fingerprint: hashToken(text) };
+  } catch {
+    return null;
+  }
+}
+
+function admitSessionCommand(
+  config: ServerConfig,
+  scope: string,
+  admission: { messageId: string; fingerprint: string },
+): "accepted" | "duplicate" | "conflict" {
+  const now = Date.now();
+  const admissions = commandAdmissionsByServer.get(config) ?? new Map<string, { fingerprint: string; admittedAt: number }>();
+  commandAdmissionsByServer.set(config, admissions);
+  for (const [key, value] of admissions) {
+    if (now - value.admittedAt <= COMMAND_ADMISSION_TTL_MS) break;
+    admissions.delete(key);
+  }
+
+  const key = hashToken(`${scope}\0${admission.messageId}`);
+  const existing = admissions.get(key);
+  if (existing) return existing.fingerprint === admission.fingerprint ? "duplicate" : "conflict";
+
+  if (admissions.size >= COMMAND_ADMISSION_CAPACITY) {
+    const oldest = admissions.keys().next().value;
+    if (oldest) admissions.delete(oldest);
+  }
+  admissions.set(key, { fingerprint: admission.fingerprint, admittedAt: now });
+  return "accepted";
+}
+
 function isPromptAsyncProxyRequest(method: string, proxyPath: string) {
   return method === "POST" && /^\/session\/[^/]+\/prompt_async$/.test(normalizeOpencodeProxyPath(proxyPath));
 }
@@ -1060,7 +1100,7 @@ export async function startServer(config: ServerConfig): Promise<ServeResult> {
         try {
           const actor = await requireClient(request, config, tokens);
           assertOpencodeProxyAllowed(actor, request.method, mount.restPath);
-          const workspace = await resolveWorkspace(config, mount.workspaceId);
+          const workspace = await resolveWorkspaceWithoutBootstrap(config, mount.workspaceId);
           proxyService = "opencode";
           proxyBaseUrl = workspace.baseUrl?.trim() || undefined;
           const response = await proxyOpencodeRequest({ config, request, url, workspace, proxyPath: mount.restPath });
@@ -1403,6 +1443,22 @@ export async function proxyOpencodeRequest(input: {
   const targetUrl = buildOpencodeProxyUrl(baseUrl, proxyPath, input.url.search);
   // Managed OpenCode proxy traffic is loopback/engine I/O; keep streaming on Node fetch.
   if (isSessionCommandProxyRequest(method, proxyPath)) {
+    const commandAdmission = commandAdmissionFromBody(body);
+    if (commandAdmission) {
+      const admissionTarget = workspace ? `workspace\0${workspace.id}` : `engine\0${baseUrl}`;
+      const admission = admitSessionCommand(
+        input.config,
+        `${admissionTarget}\0${normalizeOpencodeProxyPath(proxyPath)}`,
+        commandAdmission,
+      );
+      if (admission === "duplicate") return jsonResponse({ ok: true, accepted: true });
+      if (admission === "conflict") {
+        return jsonResponse({
+          code: "command_admission_conflict",
+          message: "This command message ID was already admitted with different input",
+        }, 409);
+      }
+    }
     void loopbackFetch(targetUrl, {
       method,
       headers,

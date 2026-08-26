@@ -42,6 +42,7 @@ const FIXTURES: Record<CapabilitySourceKind, { capabilityName: string; namespace
   externalMcp: { capabilityName: "mcp:fixture:externalAction", namespace: "external_fixture", toolName: "externalAction" },
   marketplace: { capabilityName: "plugin:fixture:content", namespace: "marketplace", toolName: "plugin:fixture:content" },
   builtinSkill: { capabilityName: "skill:fixture", namespace: "skills", toolName: "skill:fixture" },
+  remoteSession: { capabilityName: "remote-session:create", namespace: "remote_session", toolName: "create" },
   admin: { capabilityName: "admin:fixtureAction", namespace: "admin", toolName: "fixtureAction" },
 }
 
@@ -100,6 +101,7 @@ function parsedCapability(kind: CapabilitySourceKind, name: string): ParsedCapab
   if (kind === "externalMcp") return { kind, name, connectionId: "fixture", toolName: "externalAction" }
   if (kind === "marketplace") return { kind, name, pluginId: "fixture", configObjectId: "content" }
   if (kind === "builtinSkill") return { kind, name }
+  if (kind === "remoteSession") return { kind, name, action: "create" }
   return { kind, name, toolName: "fixtureAction" }
 }
 
@@ -123,6 +125,7 @@ function fixtureSources(): Record<CapabilitySourceKind, CapabilitySource> {
     externalMcp: fixtureSource("externalMcp"),
     marketplace: fixtureSource("marketplace"),
     builtinSkill: fixtureSource("builtinSkill"),
+    remoteSession: fixtureSource("remoteSession"),
     admin: fixtureSource("admin"),
   }
 }
@@ -146,6 +149,7 @@ function fixtureContext(platformAdmin: boolean): CapabilityRegistryContext {
     redirectUriBase: "http://127.0.0.1:8790",
     generatedArtifactViewsEnabled: false,
     externalMcpConnectionsEnabled: true,
+    remoteSessionsEnabled: true,
     resolvePlatformAdmin: () => {
       platformAdminResolution ??= Promise.resolve(platformAdmin)
       return platformAdminResolution

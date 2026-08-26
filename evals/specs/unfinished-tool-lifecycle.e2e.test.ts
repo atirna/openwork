@@ -5,10 +5,10 @@ import { needs, test } from "@openwork/testkit";
 
 const e2eTestsEnabled = process.env.OPENWORK_EVAL_E2E_TESTS === "1";
 const title = e2eTestsEnabled
-  ? "unfinished current-turn tools expose active, waiting, and interrupted outcomes"
+  ? "unfinished current-turn tools expose active, waiting, and unknown outcomes"
   : "unfinished tool lifecycle skipped — needs: set OPENWORK_EVAL_E2E_TESTS=1";
 
-function lifecycleExpression(lifecycle: "running" | "waiting" | "interrupted", text: string): string {
+function lifecycleExpression(lifecycle: "running" | "waiting" | "unknown", text: string): string {
   return `(() => {
     const rows = Array.from(document.querySelectorAll('[data-tool-lifecycle="${lifecycle}"]'));
     return rows.some((row) => (row.textContent || '').includes(${JSON.stringify(text)}));
@@ -69,19 +69,19 @@ test.skipIf(!e2eTestsEnabled)(title, async ({ evidence }) => {
   );
 
   await control(app, "eval.session_lifecycle.seed_unfinished_tools", { lifecycle: "idle" });
-  await waitFor(app, lifecycleExpression("interrupted", "Task interrupted"), {
+  await waitFor(app, lifecycleExpression("unknown", "Status unknown"), {
     timeoutMs: 15_000,
-    label: "idle unfinished tools visibly interrupted",
+    label: "idle unfinished tools visibly status-unknown",
   });
   const terminalState = await evalIn(app, `(() => ({
-    interrupted: document.body.innerText.includes("This step stopped before it finished. Retry to continue."),
+    unknown: document.body.innerText.includes("No terminal result was observed. This step may still be running; check the session before retrying."),
     running: Boolean(document.querySelector('[data-tool-lifecycle="running"]')),
     waiting: Boolean(document.querySelector('[data-tool-lifecycle="waiting"]')),
   }))()`);
-  expect(terminalState).toEqual({ interrupted: true, running: false, waiting: false });
+  expect(terminalState).toEqual({ unknown: true, running: false, waiting: false });
   evidence.recordAssertionEvidence(
     "An idle task never leaves its unfinished current step silently running",
-    "The tool group converged to data-tool-lifecycle=interrupted, showed retry guidance, and exposed neither running nor waiting lifecycle rows.",
+    "The tool group converged to data-tool-lifecycle=unknown, told the user to check the session before retrying, and exposed neither running nor waiting lifecycle rows.",
     true,
   );
 });

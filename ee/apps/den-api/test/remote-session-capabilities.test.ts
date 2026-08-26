@@ -1,0 +1,363 @@
+import { beforeAll, expect, test } from "bun:test"
+
+import { HeadlessThreadError } from "@openwork/headless-threads"
+import { createDenTypeId } from "@openwork-ee/utils/typeid"
+import type {
+  RemoteSessionExecuteDeps,
+  RemoteSessionRuntime,
+  RemoteSessionThreadClient,
+  RemoteSessionToolResult,
+} from "../src/mcp/remote-session-capabilities.js"
+
+function seedRequiredEnv() {
+  process.env.DATABASE_URL = process.env.DATABASE_URL ?? "mysql://root:password@127.0.0.1:3306/openwork_test"
+  process.env.DEN_DB_ENCRYPTION_KEY = process.env.DEN_DB_ENCRYPTION_KEY ?? "x".repeat(32)
+  process.env.BETTER_AUTH_SECRET = process.env.BETTER_AUTH_SECRET ?? "y".repeat(32)
+  process.env.BETTER_AUTH_URL = process.env.BETTER_AUTH_URL ?? "http://127.0.0.1:8790"
+  process.env.DEN_API_PUBLIC_URL = process.env.DEN_API_PUBLIC_URL ?? "http://127.0.0.1:8790"
+}
+
+type RemoteSessionModule = typeof import("../src/mcp/remote-session-capabilities.js")
+
+let executeRemoteSessionCapability: RemoteSessionModule["executeRemoteSessionCapability"]
+let parseRemoteSessionCapabilityName: RemoteSessionModule["parseRemoteSessionCapabilityName"]
+let searchRemoteSessionCapabilities: RemoteSessionModule["searchRemoteSessionCapabilities"]
+let remoteSessionCapabilityName: RemoteSessionModule["remoteSessionCapabilityName"]
+
+beforeAll(async () => {
+  seedRequiredEnv()
+  const module = await import("../src/mcp/remote-session-capabilities.js")
+  executeRemoteSessionCapability = module.executeRemoteSessionCapability
+  parseRemoteSessionCapabilityName = module.parseRemoteSessionCapabilityName
+  searchRemoteSessionCapabilities = module.searchRemoteSessionCapabilities
+  remoteSessionCapabilityName = module.remoteSessionCapabilityName
+})
+
+const RUNTIME: RemoteSessionRuntime = {
+  workerId: "worker_fixture",
+  baseUrl: "http://worker.fixture",
+  workspaceId: "ws_fixture",
+  clientToken: "client-token",
+  hostToken: "host-token",
+}
+
+function readyDeps(client: Partial<RemoteSessionThreadClient>): RemoteSessionExecuteDeps {
+  const failing = () => {
+    throw new Error("client method not stubbed for this test")
+  }
+  return {
+    resolveRuntime: async () => ({ ok: true, runtime: RUNTIME }),
+    createClient: () => ({
+      createThread: client.createThread ?? failing,
+      sendTurn: client.sendTurn ?? failing,
+      getThreadSnapshot: client.getThreadSnapshot ?? failing,
+    }),
+  }
+}
+
+function payload(result: RemoteSessionToolResult): Record<string, unknown> {
+  const text = result.content[0]?.text ?? "{}"
+  return JSON.parse(text) as Record<string, unknown>
+}
+
+const ORGANIZATION_ID = createDenTypeId("organization")
+
+function executeInput(action: "create" | "send" | "read", body: unknown, hasWriteScope = true) {
+  return {
+    action,
+    organizationId: ORGANIZATION_ID,
+    userId: "user_fixture",
+    hasWriteScope,
+    body,
+  }
+}
+
+test("capability names parse for exactly the three actions", () => {
+  expect(parseRemoteSessionCapabilityName("remote-session:create")).toBe("create")
+  expect(parseRemoteSessionCapabilityName("remote-session:send")).toBe("send")
+  expect(parseRemoteSessionCapabilityName("remote-session:read")).toBe("read")
+  expect(parseRemoteSessionCapabilityName("remote-session:delete")).toBeNull()
+  expect(parseRemoteSessionCapabilityName("remote-session:")).toBeNull()
+  expect(parseRemoteSessionCapabilityName("mcp:conn:tool")).toBeNull()
+  expect(parseRemoteSessionCapabilityName("createRemoteSession")).toBeNull()
+})
+
+test("search finds the capabilities with executable shape metadata", () => {
+  const matches = searchRemoteSessionCapabilities("create a remote session on the web", 10)
+  expect(matches.length).toBeGreaterThan(0)
+  const create = matches.find((match) => match.name === "remote-session:create")
+  expect(create).toBeDefined()
+  expect(create?.hasBody).toBe(true)
+  expect(create?.invocation).toEqual({ argumentsField: "body" })
+  expect(create?.kind).toBe("remote_session")
+  expect(create?.argumentsSchema).toBeDefined()
+
+  expect(searchRemoteSessionCapabilities("", 10)).toEqual([])
+  expect(searchRemoteSessionCapabilities("unrelated zebra taxonomy", 10)).toEqual([])
+})
+
+test("create returns the native session identifiers", async () => {
+  const result = await executeRemoteSessionCapability(
+    executeInput("create", { title: "Handoff", prompt: "Summarize the repo" }),
+    readyDeps({
+      createThread: async (input) => {
+        expect(input.title).toBe("Handoff")
+        expect(input.prompt).toBe("Summarize the repo")
+        return {
+          id: "ses_native_1",
+          workspaceId: "ws_fixture",
+          title: "Handoff",
+          directory: null,
+          createdAt: 1,
+          started: true,
+        }
+      },
+    }),
+  )
+  expect(result.isError).toBeUndefined()
+  const body = payload(result)
+  expect(body.sessionId).toBe("ses_native_1")
+  expect(body.workspaceId).toBe("ws_fixture")
+  expect(body.workerId).toBe("worker_fixture")
+  expect(body.target).toBe("cloud")
+  expect(body.started).toBe(true)
+})
+
+test("create rejects the desktop target with an actionable error", async () => {
+  const result = await executeRemoteSessionCapability(
+    executeInput("create", { target: "desktop" }),
+    readyDeps({}),
+  )
+  expect(result.isError).toBe(true)
+  expect(payload(result).error).toBe("unsupported_target")
+})
+
+test("create and send require the write scope; read does not", async () => {
+  const create = await executeRemoteSessionCapability(executeInput("create", {}, false), readyDeps({}))
+  expect(create.isError).toBe(true)
+  expect(payload(create).error).toBe("insufficient_mcp_scope")
+
+  const send = await executeRemoteSessionCapability(
+    executeInput("send", { sessionId: "ses_1", prompt: "hi" }, false),
+    readyDeps({}),
+  )
+  expect(send.isError).toBe(true)
+  expect(payload(send).error).toBe("insufficient_mcp_scope")
+
+  const read = await executeRemoteSessionCapability(
+    executeInput("read", { sessionId: "ses_1" }, false),
+    readyDeps({
+      getThreadSnapshot: async () => ({
+        threadId: "ses_1",
+        title: "t",
+        directory: null,
+        status: { type: "idle" },
+        messages: [],
+        todos: [],
+      }),
+    }),
+  )
+  expect(read.isError).toBeUndefined()
+})
+
+test("send returns an acceptance receipt without waiting for the reply", async () => {
+  const result = await executeRemoteSessionCapability(
+    executeInput("send", { sessionId: "ses_native_1", prompt: "Do the thing" }),
+    readyDeps({
+      sendTurn: async (threadId, input) => {
+        expect(threadId).toBe("ses_native_1")
+        expect(input.prompt).toBe("Do the thing")
+        return {
+          threadId,
+          acceptedAt: 2,
+          messageCountBefore: 3,
+          messageId: "msg_accept_1",
+          alreadyPresent: false,
+        }
+      },
+    }),
+  )
+  expect(result.isError).toBeUndefined()
+  const body = payload(result)
+  expect(body.state).toBe("accepted")
+  expect(body.messageId).toBe("msg_accept_1")
+  expect(body.alreadyPresent).toBe(false)
+})
+
+test("read returns status and a bounded transcript slice", async () => {
+  const messages = Array.from({ length: 30 }, (_, index) => ({
+    id: `msg_${index}`,
+    role: index % 2 === 0 ? "user" : "assistant",
+    parentId: null,
+    createdAt: index,
+    error: null,
+    usage: null,
+    parts: [{ id: `part_${index}`, type: "text", text: `message ${index}` }],
+  }))
+  const result = await executeRemoteSessionCapability(
+    executeInput("read", { sessionId: "ses_native_1", limit: 5 }),
+    readyDeps({
+      getThreadSnapshot: async () => ({
+        threadId: "ses_native_1",
+        title: "Handoff",
+        directory: null,
+        status: { type: "idle" },
+        messages,
+        todos: [],
+      }),
+    }),
+  )
+  expect(result.isError).toBeUndefined()
+  const body = payload(result)
+  expect(body.status).toBe("idle")
+  expect(body.messageCount).toBe(30)
+  expect(Array.isArray(body.messages)).toBe(true)
+  expect((body.messages as unknown[]).length).toBe(5)
+  expect(body.finalAssistantText).toBe("message 29")
+})
+
+test("a missing session maps to unknown_session", async () => {
+  const result = await executeRemoteSessionCapability(
+    executeInput("read", { sessionId: "ses_gone" }),
+    readyDeps({
+      getThreadSnapshot: async () => {
+        throw new HeadlessThreadError({
+          code: "http_error",
+          message: "not found",
+          method: "GET",
+          path: "/sessions/ses_gone",
+          status: 404,
+        })
+      },
+    }),
+  )
+  expect(result.isError).toBe(true)
+  const body = payload(result)
+  expect(body.error).toBe("unknown_session")
+  expect(body.retryable).toBe(false)
+})
+
+test("a waking runtime is reported as retryable without touching the client", async () => {
+  const result = await executeRemoteSessionCapability(
+    executeInput("create", {}),
+    {
+      resolveRuntime: async () => ({
+        ok: false,
+        error: "cloud_runtime_waking",
+        message: "Your OpenWork Cloud workspace is still starting.",
+        retryable: true,
+      }),
+      createClient: () => {
+        throw new Error("createClient must not be called when the runtime is not ready")
+      },
+    },
+  )
+  expect(result.isError).toBe(true)
+  const body = payload(result)
+  expect(body.error).toBe("cloud_runtime_waking")
+  expect(body.retryable).toBe(true)
+})
+
+test("a member without a cloud workspace gets the needs-setup action", async () => {
+  const result = await executeRemoteSessionCapability(
+    executeInput("create", {}),
+    {
+      resolveRuntime: async () => ({
+        ok: false,
+        error: "needs_cloud_setup",
+        message: "No OpenWork Cloud workspace is available for your account yet.",
+        retryable: false,
+      }),
+      createClient: () => {
+        throw new Error("createClient must not be called when the runtime is not ready")
+      },
+    },
+  )
+  expect(result.isError).toBe(true)
+  expect(payload(result).error).toBe("needs_cloud_setup")
+})
+
+test("invalid arguments are rejected with issue paths", async () => {
+  const result = await executeRemoteSessionCapability(
+    executeInput("send", { prompt: "missing session id" }),
+    readyDeps({}),
+  )
+  expect(result.isError).toBe(true)
+  const body = payload(result)
+  expect(body.error).toBe("invalid_capability_arguments")
+  const issues = body.issues as { path: string }[]
+  expect(issues.some((issue) => issue.path === "sessionId")).toBe(true)
+})
+
+test("capability names round-trip through the registry parser", async () => {
+  const { CAPABILITY_SOURCES } = await import("../src/mcp/capability-registry.js")
+  const source = CAPABILITY_SOURCES.remoteSession
+  for (const action of ["create", "send", "read"] as const) {
+    const name = remoteSessionCapabilityName(action)
+    expect(source.parseName(name)).toEqual({ kind: "remoteSession", name, action })
+  }
+  expect(source.parseName("remote-session:unknown")).toBeNull()
+  // Other sources must not claim remote-session names.
+  expect(CAPABILITY_SOURCES.catalog.parseName("remote-session:create")).toBeNull()
+  expect(CAPABILITY_SOURCES.externalMcp.parseName("remote-session:create")).toBeNull()
+  expect(CAPABILITY_SOURCES.marketplace.parseName("remote-session:create")).toBeNull()
+})
+
+async function registryContext(input: { remoteSessionsEnabled: boolean }) {
+  const registry = await import("../src/mcp/capability-registry.js")
+  const { createDenTypeId: createId } = await import("@openwork-ee/utils/typeid")
+  const { Hono } = await import("hono")
+  const organizationId = createId("organization")
+  type SearchContext = Parameters<(typeof registry)["CAPABILITY_SOURCES"]["remoteSession"]["search"]>[0]
+  const context: SearchContext = {
+    app: new Hono(),
+    env: undefined,
+    catalog: [],
+    principal: {
+      userId: createId("user"),
+      organizationId,
+      scopes: new Set(["mcp:read", "mcp:write"]),
+      payload: {},
+    },
+    organizationId,
+    member: { orgMembershipId: createId("member"), teamIds: [] },
+    redirectUriBase: "http://127.0.0.1:8790",
+    generatedArtifactViewsEnabled: false,
+    externalMcpConnectionsEnabled: true,
+    remoteSessionsEnabled: input.remoteSessionsEnabled,
+    resolvePlatformAdmin: () => Promise.resolve(false),
+    resolveNamespaceContext: () => Promise.resolve({
+      nativeProviderEntries: [],
+      externalMcpConnections: [],
+      codemodeNativeProviderEntries: [],
+      codemodeExternalMcpConnections: [],
+      namespaces: { native: new Map(), externalMcp: new Map() },
+    }),
+    sourceFilter: { api: true, admin: true, mcp: true, marketplace: true, skills: true },
+    reportExternalCoverage: () => {},
+  }
+  return { registry, context }
+}
+
+test("an org without the cloud capability flag never discovers remote-session capabilities", async () => {
+  const { registry, context } = await registryContext({ remoteSessionsEnabled: false })
+  const source = registry.CAPABILITY_SOURCES.remoteSession
+  const matches = await source.search(context, "remote session cloud web", 10)
+  expect(matches).toEqual([])
+
+  const executed = await source.execute(
+    context,
+    { kind: "remoteSession", name: "remote-session:create", action: "create" },
+    { name: "remote-session:create", body: {} },
+  )
+  expect(executed.isError).toBe(true)
+  const text = executed.content.find((part) => part.type === "text")
+  expect(text?.type === "text" ? text.text : "").toContain("unknown_capability")
+})
+
+test("an org with the cloud capability flag discovers remote-session capabilities", async () => {
+  const { registry, context } = await registryContext({ remoteSessionsEnabled: true })
+  const source = registry.CAPABILITY_SOURCES.remoteSession
+  const matches = await source.search(context, "remote session cloud web", 10)
+  expect(matches.map((match) => match.name)).toContain("remote-session:create")
+})

@@ -16,6 +16,7 @@ test("shared world files are discovered, path-loadable, consent-gated, and detac
     "desktop-prod-live",
     "dev-headless",
     "headless-prod-live",
+    "remote-session",
   ]);
 
   const azureByok = await loadWorldFile(join(WORLDS_DIRECTORY, "azure-byok.ts"));
@@ -39,6 +40,14 @@ test("shared world files are discovered, path-loadable, consent-gated, and detac
   assert.equal(headlessProduction.definition.requiresSharedState, true);
   assert.equal(desktopProduction.definition.adapter, "eval");
   assert.deepEqual(desktopProduction.definition.topology, desktopProductionLive.topology);
+  const remoteSession = await loadWorldFile(join(WORLDS_DIRECTORY, "remote-session.ts"));
+  assert.equal(remoteSession.defaultName, "remote-session");
+  assert.equal(remoteSession.definition.adapter, "headless-web");
+  assert.equal(remoteSession.definition.detached, true);
+  assert.equal(remoteSession.definition.requiresSharedState, false);
+  assert.deepEqual(remoteSession.definition.topology, {
+    surface: { kind: "headless-web", state: "isolated", workspace: "/tmp/openwork-remote-session-world" },
+  });
 
   let receivedName: string | undefined;
   let receivedAllowSharedState = false;

@@ -1,7 +1,7 @@
 "use client"
 
 import { Fragment, useState } from "react"
-import { AlertTriangle, CirclePause, MoreHorizontal } from "lucide-react"
+import { CircleHelp, CirclePause, MoreHorizontal } from "lucide-react"
 
 import { FileChip } from "@/components/chat/file-chip"
 import { ReasoningBlock } from "@/components/chat/reasoning-block"
@@ -9,6 +9,7 @@ import { useCurrentToolLifecycleResolver } from "@/components/chat/current-tool-
 import {
   getAggregateNowLabel,
   getAggregateCountSummary,
+  getToolAggregateLifecycle,
   getAggregateRowFile,
   getAggregateRowLabel,
   getAggregateSummary,
@@ -72,16 +73,14 @@ export function ToolAggregateGroup({ parts, thoughts = [], className }: ToolAggr
     inFlightPart?.toolCallId ?? "",
     Boolean(inFlightPart),
   )
-  const anyRunning = parts.some((part) => isToolPartInFlight(part))
-  const visiblyRunning = anyRunning
-    && currentLifecycle !== "waiting"
-    && currentLifecycle !== "interrupted"
+  const aggregateLifecycle = getToolAggregateLifecycle(parts, currentLifecycle)
+  const visiblyRunning = aggregateLifecycle === "running"
   const failedCount = parts.filter((part) => part.state === "output-error").length
   const countSummary = getAggregateCountSummary(parts)
-  const summary = currentLifecycle === "waiting"
+  const summary = aggregateLifecycle === "waiting"
     ? `Waiting for your action · ${countSummary}`
-    : currentLifecycle === "interrupted"
-      ? `Task interrupted · ${countSummary}`
+    : aggregateLifecycle === "unknown"
+      ? `Status unknown · ${countSummary}`
       : getAggregateSummary(parts, visiblyRunning ? "present" : "past")
   const nowLabel = visiblyRunning ? getAggregateNowLabel(parts) : null
   // The model is thinking mid-run: no tool is in flight but the run's
@@ -104,7 +103,7 @@ export function ToolAggregateGroup({ parts, thoughts = [], className }: ToolAggr
     <div
       className={className}
       data-tool-aggregate={latestToolCallId}
-      data-tool-lifecycle={currentLifecycle ?? (visiblyRunning ? "running" : "settled")}
+      data-tool-lifecycle={aggregateLifecycle}
     >
       <button
         type="button"
@@ -130,17 +129,17 @@ export function ToolAggregateGroup({ parts, thoughts = [], className }: ToolAggr
         ) : null}
       </button>
 
-      {currentLifecycle === "waiting" ? (
+      {aggregateLifecycle === "waiting" ? (
         <div className="mt-1 flex items-center gap-1.5 text-xs text-amber-11" role="status">
           <CirclePause aria-hidden="true" className="size-3.5 shrink-0" />
           <span>Choose an option or approve the request to continue.</span>
         </div>
       ) : null}
 
-      {currentLifecycle === "interrupted" ? (
-        <div className="mt-1 flex items-center gap-1.5 text-xs text-destructive" role="alert">
-          <AlertTriangle aria-hidden="true" className="size-3.5 shrink-0" />
-          <span>This step stopped before it finished. Retry to continue.</span>
+      {aggregateLifecycle === "unknown" ? (
+        <div className="mt-1 flex items-center gap-1.5 text-xs text-muted-foreground" role="status">
+          <CircleHelp aria-hidden="true" className="size-3.5 shrink-0" />
+          <span>No terminal result was observed. This step may still be running; check the session before retrying.</span>
         </div>
       ) : null}
 
@@ -163,7 +162,11 @@ export function ToolAggregateGroup({ parts, thoughts = [], className }: ToolAggr
         <div className="mt-1.5 flex flex-col gap-1">
           {visibleParts.map((part, index) => {
             const lifecycle = resolveLifecycle(part.toolCallId, isToolPartInFlight(part))
-            const status = lifecycle ?? persistedRowStatus(part)
+            const status = isToolPartInFlight(part)
+              ? lifecycle === "running" || lifecycle === "waiting"
+                ? lifecycle
+                : "unknown"
+              : persistedRowStatus(part)
             const reason = failureReason(part)
             const bash = isBashToolPart(part)
             const command = bash ? part.input?.command?.trim() ?? "" : ""
@@ -183,13 +186,19 @@ export function ToolAggregateGroup({ parts, thoughts = [], className }: ToolAggr
                   {status === "waiting" ? (
                     <CirclePause aria-label="Waiting" className="size-3.5 shrink-0 text-amber-11" />
                   ) : null}
-                  {status === "interrupted" ? (
-                    <AlertTriangle aria-label="Interrupted" className="size-3.5 shrink-0 text-destructive" />
+                  {status === "unknown" ? (
+                    <CircleHelp aria-label="Status unknown" className="size-3.5 shrink-0" />
                   ) : null}
                   {bash ? (
                     <span className="min-w-0 truncate">
                       <span className={cn("text-foreground", status === "running" && "ow-text-shimmer")}>
-                        {status === "running" ? "Running" : "Ran"}
+                        {status === "running"
+                          ? "Running"
+                          : status === "waiting"
+                            ? "Waiting to run"
+                            : status === "unknown"
+                              ? "Status unknown for"
+                              : "Ran"}
                       </span>{" "}
                       <span>{commandDescription}</span>
                     </span>

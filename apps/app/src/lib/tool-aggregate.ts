@@ -10,6 +10,7 @@ import {
   isWriteToolPart,
 } from "./build-in-tools"
 import { getToolActivityLabel, isToolPartInFlight } from "./tool-activity"
+import type { CurrentToolLifecycle } from "./current-tool-lifecycle"
 
 export type AnyToolPart = ToolUIPart | DynamicToolUIPart
 
@@ -30,6 +31,36 @@ export type AggregateThought = {
  * into one aggregate line. Prose from the model always breaks a group.
  */
 export type ToolFamily = "command" | "edit" | "read" | "search"
+
+export type ToolAggregateLifecycle =
+  | "running"
+  | "waiting"
+  | "unknown"
+  | "completed"
+  | "failed"
+
+/**
+ * Classify only lifecycle facts available to an aggregate tool row.
+ *
+ * A terminal tool part directly proves completion or failure. An unfinished
+ * part is running/waiting only while the current-session observer says so.
+ * The observer's generic `interrupted` state merges idle/remount gaps with
+ * real session errors, so it is not proof that a process stopped. Keep that
+ * case honest until a terminal tool result arrives; directly observed aborts
+ * and infrastructure errors remain owned by the session error presentation.
+ */
+export function getToolAggregateLifecycle(
+  parts: AnyToolPart[],
+  currentLifecycle: CurrentToolLifecycle | null,
+): ToolAggregateLifecycle {
+  if (parts.some(isToolPartInFlight)) {
+    if (currentLifecycle === "running" || currentLifecycle === "waiting") {
+      return currentLifecycle
+    }
+    return "unknown"
+  }
+  return parts.some((part) => part.state === "output-error") ? "failed" : "completed"
+}
 
 export function getToolFamily(part: AnyToolPart): ToolFamily | null {
   if (isBashToolPart(part)) return "command"
