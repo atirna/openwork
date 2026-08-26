@@ -129,6 +129,32 @@ function makeAnthropicRuntimeProvider(modelId = "claude-fable-5") {
   }
 }
 
+function makeAzureProvider(apiKeys: Record<string, string>): CloudProviderMaterializationProvider {
+  return {
+    id: createDenTypeId("llmProvider"),
+    source: "models_dev",
+    providerId: "azure",
+    name: "Azure",
+    providerConfig: {
+      id: "azure",
+      name: "Azure",
+      npm: "@ai-sdk/azure",
+      env: ["AZURE_RESOURCE_NAME", "AZURE_API_KEY"],
+    },
+    apiKey: JSON.stringify(apiKeys),
+    models: [
+      {
+        modelId: "deployment",
+        name: "deployment",
+        modelConfig: {
+          id: "deployment",
+          name: "deployment",
+        },
+      },
+    ],
+  }
+}
+
 function makeStore(providers: () => CloudProviderMaterializationProvider[]): Store {
   return {
     async listProviders() {
@@ -410,6 +436,70 @@ describe("Cloud provider materialization", () => {
       },
     })
     expect(writeCalls(instance.calls).map((call) => call.method)).toEqual(["PUT", "PATCH"])
+  })
+
+  test("writes Azure resource name and API key env while preserving the provider env config", async () => {
+    const provider = makeAzureProvider({
+      AZURE_RESOURCE_NAME: "resource-name",
+      AZURE_API_KEY: "real-api-key",
+    })
+    const instance = makeInstance()
+
+    const result = await materialize({
+      providers: () => [provider],
+      fetchImpl: instance.fetchImpl,
+      force: true,
+    })
+
+    expect(result.ok).toBe(true)
+    expect(instance.calls.find((call) => call.method === "PUT" && call.path === "/env")?.body).toEqual({
+      entries: [
+        { key: "AZURE_RESOURCE_NAME", value: "resource-name" },
+        { key: "AZURE_API_KEY", value: "real-api-key" },
+      ],
+    })
+    expect(instance.runtimeProvider(provider.id)).toMatchObject({
+      id: "azure",
+      env: ["AZURE_RESOURCE_NAME", "AZURE_API_KEY"],
+    })
+  })
+
+  test("does not materialize Azure from a resource name without its API key", async () => {
+    const provider = makeAzureProvider({ AZURE_RESOURCE_NAME: "resource-name" })
+    const instance = makeInstance()
+
+    const result = await materialize({
+      providers: () => [provider],
+      fetchImpl: instance.fetchImpl,
+      force: true,
+    })
+
+    expect(result.ok).toBe(true)
+    expect(result.providers).toBe(0)
+    expect(instance.envValue("AZURE_RESOURCE_NAME")).toBeNull()
+    expect(instance.runtimeProvider(provider.id)).toBeNull()
+  })
+
+  test("materializes a legacy scalar Azure credential as the API key env", async () => {
+    const provider = makeAzureProvider({})
+    provider.apiKey = "legacy-api-key"
+    const instance = makeInstance()
+
+    const result = await materialize({
+      providers: () => [provider],
+      fetchImpl: instance.fetchImpl,
+      force: true,
+    })
+
+    expect(result.ok).toBe(true)
+    expect(result.providers).toBe(1)
+    expect(instance.calls.find((call) => call.method === "PUT" && call.path === "/env")?.body).toEqual({
+      entries: [{ key: "AZURE_API_KEY", value: "legacy-api-key" }],
+    })
+    expect(instance.runtimeProvider(provider.id)).toMatchObject({
+      id: "azure",
+      env: ["AZURE_RESOURCE_NAME", "AZURE_API_KEY"],
+    })
   })
 
   test("skips writes and reloads when observed provider and env state match", async () => {

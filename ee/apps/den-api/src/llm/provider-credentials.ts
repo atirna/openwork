@@ -32,6 +32,31 @@ export function readProviderEnvNames(providerConfig: JsonRecord): string[] {
     : []
 }
 
+function credentialEnvRank(name: string): number | null {
+  const normalized = name.trim().toUpperCase()
+  if (/(^|_)API_KEY$/.test(normalized)) return 0
+  if (/(^|_)ACCESS_KEY_ID$/.test(normalized)) return 1
+  if (/(^|_)BEARER_TOKEN(_|$)/.test(normalized) || /(^|_)TOKEN$/.test(normalized)) return 2
+  if (/(^|_)KEY$/.test(normalized)) return 3
+  return null
+}
+
+export function selectPrimaryCredentialEnvName(envNames: string[], availableNames: Iterable<string>): string | null {
+  const available = new Set([...availableNames].filter((name) => name.trim().length > 0))
+  const orderedNames = envNames.filter((name) => available.has(name))
+  const ranked = orderedNames
+    .map((name, index) => ({ name, index, rank: credentialEnvRank(name) }))
+    .filter((entry): entry is { name: string; index: number; rank: number } => entry.rank !== null)
+    .sort((left, right) => left.rank - right.rank || left.index - right.index)
+  if (ranked[0]) return ranked[0].name
+  if (envNames.length > 1 && envNames.some((name) => credentialEnvRank(name) !== null)) return null
+  return orderedNames[0] ?? null
+}
+
+export function selectLegacyScalarCredentialEnvName(envNames: string[]): string | null {
+  return selectPrimaryCredentialEnvName(envNames, envNames) ?? envNames[0] ?? null
+}
+
 /**
  * A stored credential is a multi-env map only when it parses to a non-empty
  * JSON object whose values are all strings. Real API keys never take that
@@ -86,7 +111,8 @@ export function listConfiguredEnvKeys(stored: string | null, envNames: string[])
   }
 
   if (credential.apiKey) {
-    return envNames.length > 0 ? [envNames[0]] : []
+    const envName = selectLegacyScalarCredentialEnvName(envNames)
+    return envName ? [envName] : []
   }
 
   return []
@@ -122,7 +148,7 @@ export function resolveProviderCredential(input: {
     const existing = decodeProviderCredential(existingValue)
     const values: Record<string, string> = { ...(existing.apiKeys ?? {}) }
     if (!existing.apiKeys && existing.apiKey) {
-      const legacyEnvName = input.existing?.envNames[0]
+      const legacyEnvName = selectLegacyScalarCredentialEnvName(input.existing?.envNames ?? [])
       if (legacyEnvName) {
         values[legacyEnvName] = existing.apiKey
       }

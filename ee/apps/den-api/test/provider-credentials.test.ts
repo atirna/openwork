@@ -6,6 +6,8 @@ import {
   listConfiguredEnvKeys,
   readProviderEnvNames,
   resolveProviderCredential,
+  selectLegacyScalarCredentialEnvName,
+  selectPrimaryCredentialEnvName,
 } from "../src/llm/provider-credentials.js"
 
 const AWS_ENV = [
@@ -19,6 +21,49 @@ describe("readProviderEnvNames", () => {
   test("reads the env string list, dropping blanks and non-strings", () => {
     expect(readProviderEnvNames({ env: ["A", " ", 3, "B"] })).toEqual(["A", "B"])
     expect(readProviderEnvNames({})).toEqual([])
+  })
+})
+
+describe("selectPrimaryCredentialEnvName", () => {
+  test("prefers Azure API key over resource name", () => {
+    expect(
+      selectPrimaryCredentialEnvName(
+        ["AZURE_RESOURCE_NAME", "AZURE_API_KEY"],
+        ["AZURE_RESOURCE_NAME", "AZURE_API_KEY"],
+      ),
+    ).toBe("AZURE_API_KEY")
+  })
+
+  test("does not treat Azure resource name alone as the credential", () => {
+    expect(
+      selectPrimaryCredentialEnvName(
+        ["AZURE_RESOURCE_NAME", "AZURE_API_KEY"],
+        ["AZURE_RESOURCE_NAME"],
+      ),
+    ).toBeNull()
+  })
+
+  test("ignores API-shaped names that the provider did not declare", () => {
+    expect(
+      selectPrimaryCredentialEnvName(
+        ["AZURE_RESOURCE_NAME", "AZURE_API_KEY"],
+        ["OPENAI_API_KEY"],
+      ),
+    ).toBeNull()
+  })
+
+  test("keeps AWS access key as the primary credential", () => {
+    expect(selectPrimaryCredentialEnvName(AWS_ENV, ["AWS_ACCESS_KEY_ID", "AWS_REGION"])).toBe("AWS_ACCESS_KEY_ID")
+  })
+})
+
+describe("selectLegacyScalarCredentialEnvName", () => {
+  test("maps legacy Azure scalar credentials to the declared API key env", () => {
+    expect(selectLegacyScalarCredentialEnvName(["AZURE_RESOURCE_NAME", "AZURE_API_KEY"])).toBe("AZURE_API_KEY")
+  })
+
+  test("keeps legacy AWS scalar credentials on access key id", () => {
+    expect(selectLegacyScalarCredentialEnvName(AWS_ENV)).toBe("AWS_ACCESS_KEY_ID")
   })
 })
 
@@ -135,6 +180,21 @@ describe("resolveProviderCredential", () => {
     )
   })
 
+  test("migrates a legacy Azure scalar credential into AZURE_API_KEY", () => {
+    const stored = resolveProviderCredential({
+      envNames: ["AZURE_RESOURCE_NAME", "AZURE_API_KEY"],
+      existing: {
+        value: "legacy-api-key",
+        envNames: ["AZURE_RESOURCE_NAME", "AZURE_API_KEY"],
+      },
+      apiKeys: { AZURE_RESOURCE_NAME: "resource-name" },
+    })
+
+    expect(stored).toBe(
+      JSON.stringify({ AZURE_RESOURCE_NAME: "resource-name", AZURE_API_KEY: "legacy-api-key" }),
+    )
+  })
+
   test("collapses a map back to a bare string when env shrinks to one key", () => {
     const stored = resolveProviderCredential({
       envNames: ["GATEWAY_API_KEY"],
@@ -167,8 +227,9 @@ describe("listConfiguredEnvKeys", () => {
     ])
   })
 
-  test("legacy plain credentials map to the first env key", () => {
+  test("legacy plain credentials map to the primary credential env key", () => {
     expect(listConfiguredEnvKeys("sk-test", AWS_ENV)).toEqual(["AWS_ACCESS_KEY_ID"])
+    expect(listConfiguredEnvKeys("sk-test", ["AZURE_RESOURCE_NAME", "AZURE_API_KEY"])).toEqual(["AZURE_API_KEY"])
     expect(listConfiguredEnvKeys("sk-test", [])).toEqual([])
     expect(listConfiguredEnvKeys(null, AWS_ENV)).toEqual([])
   })

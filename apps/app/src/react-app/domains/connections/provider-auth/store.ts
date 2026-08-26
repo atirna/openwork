@@ -499,14 +499,23 @@ export function createProviderAuthStore(options: CreateProviderAuthStoreOptions)
     return "";
   };
 
-  const mirrorOpenWorkModelsVoiceEnv = async (provider: DenOrgLlmProviderConnection, apiKey: string) => {
+  const mirrorOpenWorkModelsVoiceEnv = async (
+    provider: DenOrgLlmProviderConnection,
+    apiKey: string,
+    resolvedEnvEntries: Array<{ key: string; value: string }>,
+  ) => {
     const trimmedKey = apiKey.trim();
     if (!trimmedKey) return;
     const openworkClient = options.openworkServer.getSnapshot().openworkServerClient;
     if (!openworkClient) return;
-    const entries = getCloudProviderEnv(provider.providerConfig)
-      .slice(0, 1)
-      .map((key) => ({ key, value: trimmedKey }));
+    const entries = [...resolvedEnvEntries];
+    if (entries.length === 0) {
+      entries.push(
+        ...getCloudProviderEnv(provider.providerConfig)
+          .slice(0, 1)
+          .map((key) => ({ key, value: trimmedKey })),
+      );
+    }
     if (provider.source === "openwork") {
       if (!entries.some((entry) => entry.key === "OPENWORK_API_KEY")) {
         entries.unshift({ key: "OPENWORK_API_KEY", value: trimmedKey });
@@ -1695,7 +1704,7 @@ export function createProviderAuthStore(options: CreateProviderAuthStoreOptions)
           providerID: localProviderId,
           auth: { type: "api", key: primaryApiKey },
         });
-        await mirrorOpenWorkModelsVoiceEnv(provider, primaryApiKey);
+        await mirrorOpenWorkModelsVoiceEnv(provider, primaryApiKey, envEntries);
       }
       if (existingImported?.providerId && existingImported.providerId !== localProviderId) {
         try {
