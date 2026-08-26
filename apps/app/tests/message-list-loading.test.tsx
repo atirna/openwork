@@ -44,6 +44,8 @@ describe("message-list loading feedback", () => {
     const markup = renderList([userMessage], "submitted");
 
     expect(markup).toContain("Working 0s");
+    expect(markup).toContain("ow-text-shimmer");
+    expect(markup).not.toContain("animate-spin");
     expect(markup).not.toContain("PaperGrainGradient");
   });
 
@@ -55,6 +57,8 @@ describe("message-list loading feedback", () => {
     const markup = renderList([userMessage], "streaming");
 
     expect(markup).toContain("Working 0s");
+    expect(markup).toContain("ow-text-shimmer");
+    expect(markup).not.toContain("animate-spin");
     expect(markup).not.toContain("PaperGrainGradient");
   });
 

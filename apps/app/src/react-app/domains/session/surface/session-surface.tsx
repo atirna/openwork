@@ -385,6 +385,15 @@ function createSubagentActivityEvalMessages(sessionId: string): UIMessage[] {
   ];
 }
 
+function createChatLoadingEvalMessages(sessionId: string): UIMessage[] {
+  return [{
+    id: `${sessionId}:eval-chat-loading-user`,
+    role: "user",
+    parts: [{ type: "text", text: "Confirm the loading treatment." }],
+    metadata: { opencode: { created: Date.now() } },
+  }];
+}
+
 export type SessionSurfaceProps = {
   client: OpenworkServerClient;
   environmentClient?: OpenworkServerClient | null;
@@ -1007,7 +1016,9 @@ export function SessionSurface(props: SessionSurfaceProps) {
   useEffect(() => {
     if (!chatStreaming) setSteering(false);
   }, [chatStreaming]);
+  const [evalThreadStatus, setEvalThreadStatus] = useState<ThreadStatus | null>(null);
   const status = useMemo((): ThreadStatus => {
+    if (evalThreadStatus) return evalThreadStatus;
     if (sending) {
       return "submitted";
     }
@@ -1021,10 +1032,11 @@ export function SessionSurface(props: SessionSurfaceProps) {
     }
 
     return "ready";
-  }, [liveStatus, sending]);
+  }, [evalThreadStatus, liveStatus, sending]);
   const [evalMarkdownMessages, setEvalMarkdownMessages] = useState<UIMessage[]>(EMPTY_TRANSCRIPT);
   useEffect(() => {
     setEvalMarkdownMessages(EMPTY_TRANSCRIPT);
+    setEvalThreadStatus(null);
   }, [props.sessionId]);
 
   const baseRenderedMessages = useMemo(
@@ -1210,6 +1222,28 @@ export function SessionSurface(props: SessionSurfaceProps) {
     };
   }, [props.sessionId, props.workspaceId]);
   useControlAction(props.isControlTarget ? seedSubagentActivityControlAction : null);
+  const seedChatLoadingControlAction = useMemo<OpenworkControlAction | null>(() => {
+    if (!import.meta.env.DEV) return null;
+
+    return {
+      id: "eval.chat_loading.seed",
+      label: "Seed chat loading shimmer proof",
+      description: "Dev-only eval hook that renders the main chat loading treatment.",
+      sideEffect: "mutation",
+      disabled: !props.sessionId,
+      execute: () => {
+        setEvalMarkdownMessages(createChatLoadingEvalMessages(props.sessionId));
+        setEvalThreadStatus("streaming");
+        useSessionActivityStore.getState().setRunStatus(
+          props.workspaceId,
+          props.sessionId,
+          { type: "busy" },
+        );
+        return { ok: true };
+      },
+    };
+  }, [props.sessionId, props.workspaceId]);
+  useControlAction(props.isControlTarget ? seedChatLoadingControlAction : null);
   const openTargets = useMemo(() => deriveOpenTargets(renderedMessages), [renderedMessages]);
   const openTargetsFingerprint = useMemo(
     () => openTargets.map((target) => `${target.kind}:${target.value}:${target.confidence}`).join("|"),

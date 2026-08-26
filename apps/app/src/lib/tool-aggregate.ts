@@ -110,7 +110,9 @@ export function getAggregateSummary(parts: AnyToolPart[], tense: "present" | "pa
     pieces.push(`${tense === "past" ? "edited" : "editing"} ${plural(count, "file")}`)
   }
   if (commands > 0) {
-    pieces.push(`${tense === "past" ? "ran" : "running"} ${plural(commands, "command")}`)
+    pieces.push(commands === 1
+      ? `${tense === "past" ? "ran" : "running"} command`
+      : `${tense === "past" ? "ran" : "running"} ${commands} commands`)
   }
   if (readCalls > 0) {
     const count = readPaths.size > 0 ? readPaths.size : readCalls

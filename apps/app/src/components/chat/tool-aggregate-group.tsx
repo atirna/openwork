@@ -1,7 +1,7 @@
 "use client"
 
 import { useState } from "react"
-import { AlertTriangle, ChevronRight, CirclePause, LoaderCircle } from "lucide-react"
+import { AlertTriangle, ChevronRight, CirclePause, MoreHorizontal } from "lucide-react"
 
 import { FileChip } from "@/components/chat/file-chip"
 import { useCurrentToolLifecycleResolver } from "@/components/chat/current-tool-lifecycle-context"
@@ -14,6 +14,7 @@ import {
   type AnyToolPart,
 } from "@/lib/tool-aggregate"
 import { isToolPartInFlight } from "@/lib/tool-activity"
+import { isBashToolPart } from "@/lib/build-in-tools"
 import { trackToolCallDuration } from "@/lib/tool-call-duration"
 import { cn } from "@/lib/utils"
 
@@ -82,6 +83,8 @@ export function ToolAggregateGroup({ parts, className }: ToolAggregateGroupProps
 
   // Track durations for every part so each is frozen the moment it completes.
   const durations = parts.map((part) => trackToolCallDuration(part))
+  const singleCommand = parts.length === 1 && Boolean(parts[0] && isBashToolPart(parts[0]))
+  const singleCommandDuration = singleCommand ? durations[0] : null
   const visibleParts = showAll ? parts : parts.slice(0, ROW_CAP)
   const hiddenCount = parts.length - visibleParts.length
 
@@ -105,6 +108,11 @@ export function ToolAggregateGroup({ parts, className }: ToolAggregateGroupProps
           )}
         />
         <span className="min-w-0 truncate">{summary}</span>
+        {singleCommandDuration ? (
+          <span className="shrink-0 tabular-nums text-xs text-muted-foreground/70">
+            {singleCommandDuration}
+          </span>
+        ) : null}
         {failedCount > 0 ? (
           <span className="shrink-0 text-xs text-muted-foreground">
             {failedCount} failed
@@ -127,10 +135,9 @@ export function ToolAggregateGroup({ parts, className }: ToolAggregateGroupProps
       ) : null}
 
       {nowLabel ? (
-        <div className="mt-1 flex min-w-0 items-center gap-2 ps-5 text-sm text-muted-foreground">
-          <LoaderCircle aria-hidden="true" className="size-3.5 shrink-0 animate-spin text-muted-foreground" />
-          <span className="min-w-0 truncate">
-            <span className="text-muted-foreground/70">Now: </span>
+        <div data-tool-aggregate-now className="mt-1 min-w-0 ps-5 text-sm text-muted-foreground">
+          <span className="block min-w-0 truncate">
+            <span className="ow-text-shimmer">Now: </span>
             {nowLabel}
           </span>
         </div>
@@ -142,25 +149,33 @@ export function ToolAggregateGroup({ parts, className }: ToolAggregateGroupProps
             const lifecycle = resolveLifecycle(part.toolCallId, isToolPartInFlight(part))
             const status = lifecycle ?? persistedRowStatus(part)
             const reason = failureReason(part)
+            const bash = isBashToolPart(part)
+            const command = bash ? part.input?.command?.trim() ?? "" : ""
+            const commandDescription = bash
+              ? part.input?.description?.trim() || "command"
+              : ""
             return (
-              <div key={part.toolCallId} className="flex min-w-0 flex-col gap-0.5">
-                <div className="flex min-w-0 items-center gap-2 text-xs text-muted-foreground">
-                  {status === "running" ? (
-                    <span className="flex size-3.5 shrink-0 items-center justify-center">
-                      <LoaderCircle aria-hidden="true" className="size-3 animate-spin text-muted-foreground" />
-                    </span>
-                  ) : null}
+              <div key={part.toolCallId} className="flex min-w-0 flex-col gap-1.5 py-1">
+                {!singleCommand ? (
+                  <div className="flex min-w-0 items-center gap-2 text-sm text-muted-foreground">
                   {status === "waiting" ? (
                     <CirclePause aria-label="Waiting" className="size-3.5 shrink-0 text-amber-11" />
                   ) : null}
                   {status === "interrupted" ? (
                     <AlertTriangle aria-label="Interrupted" className="size-3.5 shrink-0 text-destructive" />
                   ) : null}
-                  {(() => {
+                  {bash ? (
+                    <span className="min-w-0 truncate">
+                      <span className={cn("text-foreground", status === "running" && "ow-text-shimmer")}>
+                        {status === "running" ? "Running" : "Ran"}
+                      </span>{" "}
+                      <span>{commandDescription}</span>
+                    </span>
+                  ) : (() => {
                     const file = getAggregateRowFile(part)
                     if (!file) {
                       return (
-                        <span className="min-w-0 truncate font-mono text-[11px]">
+                        <span className="min-w-0 truncate">
                           {getAggregateRowLabel(part)}
                         </span>
                       )
@@ -177,7 +192,18 @@ export function ToolAggregateGroup({ parts, className }: ToolAggregateGroupProps
                       {durations[index]}
                     </span>
                   ) : null}
-                </div>
+                  </div>
+                ) : null}
+                {bash && command ? (
+                  <div
+                    data-tool-aggregate-command
+                    className="flex min-w-0 items-center gap-2 rounded-xl border border-border/70 bg-background px-3 py-2 font-mono text-sm shadow-xs"
+                  >
+                    <span className="shrink-0 text-muted-foreground/60">$</span>
+                    <code className="min-w-0 flex-1 truncate text-blue-11">{command}</code>
+                    <MoreHorizontal aria-hidden="true" className="size-4 shrink-0 text-muted-foreground/70" />
+                  </div>
+                ) : null}
                 {reason ? (
                   <div className="text-[11px] text-muted-foreground">failed — {reason}</div>
                 ) : null}

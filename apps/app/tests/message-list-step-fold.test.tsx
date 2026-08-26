@@ -121,7 +121,7 @@ describe("finished turn step fold (single OpenCode message per turn)", () => {
 
     expect(markup).not.toContain("Worked for");
     // Both calls merge into one aggregate summary line.
-    expect(markup).toContain("Edited 1 file, ran 1 command");
+    expect(markup).toContain("Edited 1 file, ran command");
     expect(markup).toContain("Done.");
   });
 

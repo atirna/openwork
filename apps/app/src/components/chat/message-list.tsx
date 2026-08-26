@@ -833,9 +833,8 @@ MessageComponent.displayName = "MessageComponent"
 
 const LoadingMessage = React.memo(({ elapsedSeconds }: { elapsedSeconds: number }) => (
     <Message className="mx-auto flex w-full max-w-3xl flex-col items-start gap-2 px-2 md:px-10">
-      <div className="flex items-center gap-1.5 px-1 py-1 text-sm text-muted-foreground">
-        <LoaderCircle aria-hidden="true" className="size-3.5 animate-spin" />
-        <span className="tabular-nums">Working {elapsedSeconds}s</span>
+      <div data-loading-message="working" className="py-1 text-sm text-muted-foreground">
+        <span className="ow-text-shimmer tabular-nums">Working {elapsedSeconds}s</span>
       </div>
     </Message>
 ))
