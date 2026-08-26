@@ -355,6 +355,36 @@ function createSessionLifecycleEvalMessages(sessionId: string): UIMessage[] {
   ];
 }
 
+function createSubagentActivityEvalMessages(sessionId: string): UIMessage[] {
+  const now = Date.now();
+  return [
+    {
+      id: `${sessionId}:eval-subagent-user`,
+      role: "user",
+      parts: [{ type: "text", text: "Build an isolated Azure reproduction." }],
+      metadata: { opencode: { created: now } },
+    },
+    {
+      id: `${sessionId}:eval-subagent-assistant`,
+      role: "assistant",
+      parts: [
+        {
+          type: "dynamic-tool",
+          toolName: "task",
+          toolCallId: "eval-subagent-activity",
+          state: "input-streaming",
+          input: {
+            description: "Build isolated Azure repro",
+            prompt: "Reproduce the Azure failure in isolation.",
+            subagent_type: "executor-deep",
+          },
+        },
+      ],
+      metadata: { opencode: { created: now + 1 } },
+    },
+  ];
+}
+
 export type SessionSurfaceProps = {
   client: OpenworkServerClient;
   environmentClient?: OpenworkServerClient | null;
@@ -1159,6 +1189,27 @@ export function SessionSurface(props: SessionSurfaceProps) {
     };
   }, [props.sessionId, snapshotQuery.refetch]);
   useControlAction(props.isControlTarget ? refreshCurrentSessionControlAction : null);
+  const seedSubagentActivityControlAction = useMemo<OpenworkControlAction | null>(() => {
+    if (!import.meta.env.DEV) return null;
+
+    return {
+      id: "eval.task_activity.seed",
+      label: "Seed running delegated-task activity proof",
+      description: "Dev-only eval hook that renders a deterministic running delegated-task row.",
+      sideEffect: "mutation",
+      disabled: !props.sessionId,
+      execute: () => {
+        setEvalMarkdownMessages(createSubagentActivityEvalMessages(props.sessionId));
+        useSessionActivityStore.getState().setRunStatus(
+          props.workspaceId,
+          props.sessionId,
+          { type: "busy" },
+        );
+        return { ok: true };
+      },
+    };
+  }, [props.sessionId, props.workspaceId]);
+  useControlAction(props.isControlTarget ? seedSubagentActivityControlAction : null);
   const openTargets = useMemo(() => deriveOpenTargets(renderedMessages), [renderedMessages]);
   const openTargetsFingerprint = useMemo(
     () => openTargets.map((target) => `${target.kind}:${target.value}:${target.confidence}`).join("|"),

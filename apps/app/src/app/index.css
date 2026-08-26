@@ -498,6 +498,14 @@ select:disabled {
   animation: ow-text-shimmer 2.4s linear infinite;
 }
 
+@media (prefers-reduced-motion: reduce) {
+  .ow-text-shimmer {
+    background-image: none;
+    color: rgb(var(--dls-secondary-rgb) / 0.7);
+    animation: none;
+  }
+}
+
 /* Quiet, small dot ticker (`:: :: ::`). Each dot pulses briefly in sequence,
    illuminating left-to-right like a subtle running light. Used for boot,
    "awaiting first token", and any idle-but-alive hint. */

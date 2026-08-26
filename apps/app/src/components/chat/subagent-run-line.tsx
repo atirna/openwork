@@ -1,7 +1,7 @@
 "use client"
 
 import { useEffect, useState } from "react"
-import { ArrowUpRight, LoaderCircle } from "lucide-react"
+import { ArrowUpRight } from "lucide-react"
 
 import {
   Collapsible,
@@ -28,7 +28,7 @@ function agentName(slug: string): string {
 }
 
 /**
- * Sub-agent task cards use the standard tool-call spinner while running.
+ * Running sub-agent task cards use a quiet text shimmer for activity.
  * Line 1 = task title + agent name; line 2 = live status verb or
  * "Completed". The card is the doorway into the sub-agent's own session:
  * when the engine reports the child session id, clicking it opens that
@@ -63,12 +63,7 @@ export function SubagentRunLine({ part, className }: SubagentRunLineProps) {
   const lines = (
     <>
       <span className="flex min-w-0 items-center gap-2">
-        {inFlight ? (
-          <span className="flex size-3.5 shrink-0 items-center justify-center">
-            <LoaderCircle aria-hidden="true" className="size-3.5 animate-spin text-muted-foreground" />
-          </span>
-        ) : null}
-        <span className="min-w-0 truncate">
+        <span className={cn("min-w-0 truncate", inFlight && "ow-text-shimmer")}>
           {title}
           <span className="text-muted-foreground/70"> · {agent} agent</span>
         </span>
@@ -79,7 +74,7 @@ export function SubagentRunLine({ part, className }: SubagentRunLineProps) {
           />
         ) : null}
       </span>
-      <span className={cn("min-w-0 truncate text-xs text-muted-foreground/70", inFlight && "ps-5.5")}>
+      <span className="min-w-0 truncate text-xs text-muted-foreground/70">
         {isFailed ? `Failed — ${status}` : status}
         {!inFlight && !isFailed && duration ? ` · ${duration}` : ""}
       </span>
@@ -88,7 +83,12 @@ export function SubagentRunLine({ part, className }: SubagentRunLineProps) {
 
   if (childSessionId && onOpenSubagentSession) {
     return (
-      <div data-subagent-run={part.toolCallId} data-subagent-session-id={childSessionId} className={className}>
+      <div
+        data-subagent-run={part.toolCallId}
+        data-subagent-session-id={childSessionId}
+        data-subagent-activity={inFlight ? "shimmer" : isFailed ? "failed" : "completed"}
+        className={className}
+      >
         <button
           type="button"
           className="group flex min-w-0 max-w-full cursor-pointer flex-col gap-0.5 text-start text-sm text-muted-foreground transition-colors hover:text-foreground"
@@ -102,7 +102,13 @@ export function SubagentRunLine({ part, className }: SubagentRunLineProps) {
   }
 
   return (
-    <Collapsible data-subagent-run={part.toolCallId} open={open} onOpenChange={setOpen} className={className}>
+    <Collapsible
+      data-subagent-run={part.toolCallId}
+      data-subagent-activity={inFlight ? "shimmer" : isFailed ? "failed" : "completed"}
+      open={open}
+      onOpenChange={setOpen}
+      className={className}
+    >
       <CollapsibleTrigger
         className="group flex min-w-0 max-w-full cursor-pointer flex-col gap-0.5 text-start text-sm text-muted-foreground transition-colors hover:text-foreground"
         aria-label={open ? `${title}. Hide details` : `${title}. Show details`}
