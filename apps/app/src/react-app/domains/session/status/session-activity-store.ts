@@ -109,6 +109,36 @@ function updateWorkspaceStatus(
   };
 }
 
+function sameStrings(left: string[], right: string[]): boolean {
+  return left.length === right.length && left.every((value, index) => value === right[index]);
+}
+
+function sameMessageRoles(
+  left: Record<string, SessionMessageRole>,
+  right: Record<string, SessionMessageRole>,
+): boolean {
+  const leftEntries = Object.entries(left);
+  return leftEntries.length === Object.keys(right).length
+    && leftEntries.every(([messageId, role]) => right[messageId] === role);
+}
+
+function sameActivityRecord(
+  current: SessionActivityRecord,
+  next: SessionActivityRecord,
+  status: SessionActivityStatus,
+): boolean {
+  return current.status === status
+    && current.runActive === next.runActive
+    && current.runStatusAt === next.runStatusAt
+    && current.assistantOutput === next.assistantOutput
+    && current.errorActive === next.errorActive
+    && current.errorMessage === next.errorMessage
+    && current.compacting === next.compacting
+    && sameStrings(current.waitingPermissionIds, next.waitingPermissionIds)
+    && sameStrings(current.waitingQuestionIds, next.waitingQuestionIds)
+    && sameMessageRoles(current.messageRoles, next.messageRoles);
+}
+
 function updateRecord(
   state: Pick<SessionActivityStore, "recordsByWorkspaceId" | "statusesByWorkspaceId">,
   workspaceId: string,
@@ -116,8 +146,10 @@ function updateRecord(
   updater: (record: SessionActivityRecord) => SessionActivityRecord,
 ) {
   const workspaceRecords = state.recordsByWorkspaceId[workspaceId] ?? {};
-  const nextRecord = updater(workspaceRecords[sessionId] ?? createRecord());
+  const currentRecord = workspaceRecords[sessionId];
+  const nextRecord = updater(currentRecord ?? createRecord());
   const status = statusForRecord(nextRecord);
+  if (currentRecord && sameActivityRecord(currentRecord, nextRecord, status)) return state;
   const recordWithStatus = { ...nextRecord, status, updatedAt: Date.now() };
   return {
     recordsByWorkspaceId: {

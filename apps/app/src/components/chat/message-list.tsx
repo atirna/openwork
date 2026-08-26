@@ -115,6 +115,7 @@ import { isToolPartInFlight } from "@/lib/tool-activity"
 import { faviconUrlForHref } from "@/lib/favicon"
 import { useOpenArtifactPath } from "@/lib/artifacts"
 import { cn } from "@/lib/utils"
+import { DevProfiler } from "@/react-app/shell/dev-profiler"
 import { groupMessages, isMessageGroup, getLastTextPart, getAggregateOnlyParts, getAssistantRenderGroups, getFileTitle, getMediaBadge, getMessageCompleted, getMessageCreated, formatMessageTimestamp, splitTurnAtAnswer, type UIMessageWithIndex, getMessagesText, getSafeFileDownloadUrl, getSafeFileRevealPath } from "./utils"
 import type { AnyToolPart } from "@/lib/tool-aggregate"
 
@@ -877,10 +878,16 @@ const RetryMessage = React.memo(({ status }: RetryMessageProps) => {
   const [seconds, setSeconds] = React.useState(() => retryDelaySeconds(status))
 
   React.useEffect(() => {
-    const update = () => setSeconds(retryDelaySeconds(status))
+    let timer: number | null = null
+    const update = () => {
+      const nextSeconds = retryDelaySeconds(status)
+      setSeconds((current) => current === nextSeconds ? current : nextSeconds)
+      if (nextSeconds > 0) timer = window.setTimeout(update, 1000)
+    }
     update()
-    const timer = window.setInterval(update, 1000)
-    return () => window.clearInterval(timer)
+    return () => {
+      if (timer !== null) window.clearTimeout(timer)
+    }
   }, [status])
 
   const info = seconds > 0
@@ -967,7 +974,7 @@ function CompletedStepRun({ label, children }: { label: string; children: React.
 
 interface AssistantMessageGroupProps {
   items: UIMessageWithIndex[]
-  messages: UIMessage[]
+  isLastGroup: boolean
   isStreaming: boolean
 }
 
@@ -990,7 +997,7 @@ function collectMcpAppParts(items: UIMessageWithIndex[]): DynamicToolUIPart[] {
 
 function MessageGroup({
   items,
-  messages,
+  isLastGroup,
   isStreaming,
 }: AssistantMessageGroupProps) {
   const { onRevertToUserMessage, onForkAtMessage, showThinking } = useMessageList()
@@ -999,7 +1006,7 @@ function MessageGroup({
   // client-side messages (e.g. session errors) don't exist on the server and
   // silently corrupt fork/revert boundaries.
   const lastRealItem = items.findLast((item) => !isSessionErrorMessage(item.message))
-  const isLiveGroup = isStreaming && lastItem !== undefined && lastItem.index === messages.length - 1
+  const isLiveGroup = isStreaming && isLastGroup
 
   if (!lastItem || isMessageEmptyGroup(items)) {
     return null;
@@ -1081,7 +1088,7 @@ function MessageGroup({
     : []
 
   const renderItem = (item: UIMessageWithIndex, groupIndex: number, hideReasoning?: boolean) => {
-    const isLastMessage = item.index === messages.length - 1
+    const isLastMessage = isLastGroup && item.index === lastItem.index
 
     return (
       <div key={item.message.id}>
@@ -1131,6 +1138,7 @@ function MessageGroup({
   }
 
   return (
+    <DevProfiler id={`MessageGroup:${lastItem.message.id}`}>
       <div className="flex flex-col gap-2 group/message-group">
       {/* The scroll area keeps the same 8px rhythm the parts inside a single
           message use, so a step row is spaced identically whether or not a
@@ -1197,8 +1205,37 @@ function MessageGroup({
         </div>
       )}
       </div>
+    </DevProfiler>
   )
 }
+
+function sameMessageGroupProps(left: AssistantMessageGroupProps, right: AssistantMessageGroupProps): boolean {
+  return left.isLastGroup === right.isLastGroup
+    && left.isStreaming === right.isStreaming
+    && left.items.length === right.items.length
+    && left.items.every((item, index) => (
+      item.index === right.items[index]?.index
+      && item.message === right.items[index]?.message
+    ))
+}
+
+const MemoizedMessageGroup = React.memo(MessageGroup, sameMessageGroupProps)
+
+type StandaloneMessageProps = {
+  message: UIMessage
+  isLastMessage: boolean
+  isStreaming: boolean
+  isLastStep: boolean
+}
+
+const StandaloneMessage = React.memo(function StandaloneMessage(props: StandaloneMessageProps) {
+  return (
+    <div>
+      <MessageComponent {...props} />
+      <ArtifactList messages={[props.message]} includeTargetFallbacks={false} />
+    </div>
+  )
+})
 
 interface MessageListProps {
   messages: UIMessage[]
@@ -1261,11 +1298,11 @@ export function MessageList({ messages, status, activityStatus, retryStatus }: M
         {items.map((item) => {
         if (isMessageGroup(item)) {
           return (
-            <MessageGroup
+            <MemoizedMessageGroup
               key={item.messages[0]?.message.id ?? "empty-assistant-group"}
               items={item.messages}
-              messages={messages}
-              isStreaming={isStreaming}
+              isLastGroup={item.messages.at(-1)?.index === messages.length - 1}
+              isStreaming={isStreaming && item.messages.at(-1)?.index === messages.length - 1}
             />
           )
         }
@@ -1275,15 +1312,13 @@ export function MessageList({ messages, status, activityStatus, retryStatus }: M
           !messages[item.index + 1] || messages[item.index + 1].role !== item.message.role
 
         return (
-          <div key={item.message.id}>
-            <MessageComponent
-              message={item.message}
-              isLastMessage={isLastMessage}
-              isStreaming={isLastMessage && isStreaming}
-              isLastStep={isLastStep}
-            />
-            <ArtifactList messages={[item.message]} includeTargetFallbacks={false} />
-          </div>
+          <StandaloneMessage
+            key={item.message.id}
+            message={item.message}
+            isLastMessage={isLastMessage}
+            isStreaming={isLastMessage && isStreaming}
+            isLastStep={isLastStep}
+          />
         )
         })}
 

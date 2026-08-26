@@ -1,5 +1,5 @@
 /** @jsxImportSource react */
-import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { createPortal } from "react-dom";
 import type { Agent } from "@opencode-ai/sdk/v2/client";
 import { AppWindowMac, ArrowUp, Check, ChevronDown, ChevronRight, FileText, LoaderCircle, Paperclip, Plus, RefreshCw, Settings, Square, Terminal, X, Zap } from "lucide-react";
@@ -33,6 +33,7 @@ import {
   composerConnectionSignIn,
   mergeComposerConnectionInventory,
 } from "./composer-connections";
+import { DevProfiler } from "@/react-app/shell/dev-profiler";
 
 type MentionItem = {
   id: string;
@@ -223,7 +224,7 @@ function pluginSlashCommandName(file: CloudImportedPluginFile) {
   return null;
 }
 
-export function ReactSessionComposer(props: ComposerProps) {
+export const ReactSessionComposer = memo(function ReactSessionComposer(props: ComposerProps) {
   let fileInput: HTMLInputElement | undefined;
   const orgMcp = useOrgMcpConnections();
   const [agents, setAgents] = useState<Agent[]>([]);
@@ -1241,6 +1242,7 @@ export function ReactSessionComposer(props: ComposerProps) {
   };
 
   return (
+    <DevProfiler id="SessionComposer">
     <div
       ref={rootRef}
       className={props.flush ? `relative ${toolMenuOpen ? "z-50" : "z-20"}` : `sticky bottom-0 ${toolMenuOpen ? "z-50" : "z-20"} bg-gradient-to-t from-dls-surface via-dls-surface/95 to-transparent px-4 pb-[max(0.5rem,calc(env(safe-area-inset-bottom)+var(--keyboard-inset,0px)))] max-lg:px-3 lg:px-8 ${props.compactTopSpacing ? "pt-0" : "pt-1"}`}
@@ -1817,5 +1819,6 @@ export function ReactSessionComposer(props: ComposerProps) {
 
       </div>
     </div>
+    </DevProfiler>
   );
-}
+});

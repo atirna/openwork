@@ -81,6 +81,57 @@ export function MessageListProvider({
   onMcpReopenAuthorization,
   onMcpRetry,
 }: MessageListProviderProps) {
+  const handlersRef = React.useRef({
+    dispatchAction,
+    setPrompt,
+    onRevertToUserMessage,
+    onForkAtMessage,
+    onEditUserMessage,
+    onOpenSubagentSession,
+    onMcpReconnect,
+    onMcpReopenAuthorization,
+    onMcpRetry,
+  })
+  React.useEffect(() => {
+    handlersRef.current = {
+      dispatchAction,
+      setPrompt,
+      onRevertToUserMessage,
+      onForkAtMessage,
+      onEditUserMessage,
+      onOpenSubagentSession,
+      onMcpReconnect,
+      onMcpReopenAuthorization,
+      onMcpRetry,
+    }
+  }, [
+    dispatchAction,
+    setPrompt,
+    onRevertToUserMessage,
+    onForkAtMessage,
+    onEditUserMessage,
+    onOpenSubagentSession,
+    onMcpReconnect,
+    onMcpReopenAuthorization,
+    onMcpRetry,
+  ])
+  const stableHandlers = React.useMemo(() => ({
+    dispatchAction: (action: DispatchAction) => handlersRef.current.dispatchAction(action),
+    setPrompt: (prompt: string) => handlersRef.current.setPrompt(prompt),
+    onRevertToUserMessage: (messageId: string) => handlersRef.current.onRevertToUserMessage(messageId),
+    onForkAtMessage: (messageId: string) => handlersRef.current.onForkAtMessage(messageId),
+    onEditUserMessage: (messageId: string, text: string) => handlersRef.current.onEditUserMessage(messageId, text),
+    onOpenSubagentSession: (sessionId: string) => handlersRef.current.onOpenSubagentSession?.(sessionId),
+    onMcpReconnect: (
+      action: ChatToolReconnectAction,
+      onProgress: (progress: ChatToolReconnectProgress) => void,
+    ) => handlersRef.current.onMcpReconnect(action, onProgress),
+    onMcpReopenAuthorization: (action: ChatToolReconnectAction, authorizeUrl: string) => (
+      handlersRef.current.onMcpReopenAuthorization(action, authorizeUrl)
+    ),
+    onMcpRetry: (action: ChatToolReconnectAction) => handlersRef.current.onMcpRetry(action),
+  }), [])
+  const canOpenSubagentSession = Boolean(onOpenSubagentSession)
   const value = React.useMemo(
     () => ({
       workspaceId,
@@ -90,15 +141,10 @@ export function MessageListProvider({
       developerMode,
       displaySuggestions,
       providerConnectedCount,
-      dispatchAction,
-      setPrompt,
-      onRevertToUserMessage,
-      onForkAtMessage,
-      onEditUserMessage,
-      onOpenSubagentSession,
-      onMcpReconnect,
-      onMcpReopenAuthorization,
-      onMcpRetry,
+      ...stableHandlers,
+      onOpenSubagentSession: canOpenSubagentSession
+        ? stableHandlers.onOpenSubagentSession
+        : undefined,
     }),
     [
       workspaceId,
@@ -108,15 +154,8 @@ export function MessageListProvider({
       developerMode,
       displaySuggestions,
       providerConnectedCount,
-      dispatchAction,
-      setPrompt,
-      onRevertToUserMessage,
-      onForkAtMessage,
-      onEditUserMessage,
-      onOpenSubagentSession,
-      onMcpReconnect,
-      onMcpReopenAuthorization,
-      onMcpRetry,
+      stableHandlers,
+      canOpenSubagentSession,
     ],
   )
 

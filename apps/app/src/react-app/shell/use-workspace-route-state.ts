@@ -59,8 +59,8 @@ import {
   describeRouteError,
   isTransientStartupError,
   mapDesktopWorkspace,
-  orderRouteWorkspaces,
   refreshRouteWorkspaceListState,
+  stabilizeRouteWorkspaceOrder,
   type RouteSession,
   type RouteWorkspace,
 } from "./route-workspaces";
@@ -68,6 +68,7 @@ import {
   readActiveWorkspaceId,
   readWorkspaceOrderIds,
   writeActiveWorkspaceId,
+  writeWorkspaceOrderIds,
 } from "./session-memory";
 import {
   legacySessionRoute,
@@ -234,6 +235,20 @@ export function useWorkspaceRouteState(input: UseWorkspaceRouteStateInput) {
   const loadedWorkspaceIdsRef = useRef(new Set<string>());
   const serverActiveWorkspaceIdRef = useRef("");
   const workspaceSelectionCommitTimerRef = useRef<number | null>(null);
+  const commitStableWorkspaceOrder = useCallback((nextWorkspaces: RouteWorkspace[]) => {
+    const currentOrderIds = workspaceOrderIdsRef.current;
+    const stable = stabilizeRouteWorkspaceOrder(nextWorkspaces, currentOrderIds);
+    const orderChanged = stable.orderIds.length !== currentOrderIds.length
+      || stable.orderIds.some((id, index) => id !== currentOrderIds[index]);
+
+    if (orderChanged) {
+      workspaceOrderIdsRef.current = stable.orderIds;
+      setWorkspaceOrderIds(stable.orderIds);
+      writeWorkspaceOrderIds(stable.orderIds);
+    }
+
+    return stable.workspaces;
+  }, []);
   const rememberPendingCreatedSession = useCallback((workspaceId: string, sessionId: string) => {
     const id = sessionId.trim();
     if (!workspaceId || !id) return;
@@ -496,7 +511,7 @@ export function useWorkspaceRouteState(input: UseWorkspaceRouteStateInput) {
           setBaseUrl("");
           setToken("");
           if (workspacesRef.current.length === 0 && desktopWorkspaces.length > 0) {
-            const orderedDesktopWorkspaces = orderRouteWorkspaces(desktopWorkspaces, workspaceOrderIdsRef.current);
+            const orderedDesktopWorkspaces = commitStableWorkspaceOrder(desktopWorkspaces);
             setWorkspaces(orderedDesktopWorkspaces);
             setLegacySelectedWorkspaceId(
               (current) => current || resolveWorkspaceListSelectedId(desktopList) || orderedDesktopWorkspaces[0]?.id || "",
@@ -512,7 +527,7 @@ export function useWorkspaceRouteState(input: UseWorkspaceRouteStateInput) {
         setClient(null);
         setBaseUrl("");
         setToken("");
-        const orderedDesktopWorkspaces = orderRouteWorkspaces(desktopWorkspaces, workspaceOrderIdsRef.current);
+        const orderedDesktopWorkspaces = commitStableWorkspaceOrder(desktopWorkspaces);
         setWorkspaces(orderedDesktopWorkspaces);
         sessionsByWorkspaceIdRef.current = {};
         setSessionsByWorkspaceId({});
@@ -556,7 +571,7 @@ export function useWorkspaceRouteState(input: UseWorkspaceRouteStateInput) {
         });
         setRouteError(message);
       }
-      const nextWorkspaces = workspaceListState.workspaces;
+      const nextWorkspaces = commitStableWorkspaceOrder(workspaceListState.workspaces);
       serverActiveWorkspaceIdRef.current = workspaceListState.activeId ?? "";
 
       // Preserve any sessions we already have cached so switching routes
@@ -638,7 +653,7 @@ export function useWorkspaceRouteState(input: UseWorkspaceRouteStateInput) {
       });
       setRouteError(message);
       if (desktopWorkspaces.length > 0) {
-        const orderedDesktopWorkspaces = orderRouteWorkspaces(desktopWorkspaces, workspaceOrderIdsRef.current);
+        const orderedDesktopWorkspaces = commitStableWorkspaceOrder(desktopWorkspaces);
         setWorkspaces(orderedDesktopWorkspaces);
         setLegacySelectedWorkspaceId((current) =>
           current || resolveWorkspaceListSelectedId(desktopList) || orderedDesktopWorkspaces[0]?.id || "",
@@ -660,7 +675,7 @@ export function useWorkspaceRouteState(input: UseWorkspaceRouteStateInput) {
         }
       }
     }
-  }, [legacyWorkspaceInferenceKey, loadWorkspaceSessionsInBackground, markBootRouteReady, updateLocalServer]);
+  }, [commitStableWorkspaceOrder, legacyWorkspaceInferenceKey, loadWorkspaceSessionsInBackground, markBootRouteReady, updateLocalServer]);
 
   const routeWorkspaceKnown = Boolean(
     routeWorkspaceId && workspaces.some((workspace) => workspace.id === routeWorkspaceId),

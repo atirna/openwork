@@ -113,6 +113,27 @@ afterEach(() => {
 });
 
 describe("session run status ordering", () => {
+  test("does not publish duplicate activity observations", () => {
+    useSessionActivityStore.getState().setRunStatus(workspaceId, sessionId, { type: "busy" });
+    useSessionActivityStore.getState().markMessageRole(workspaceId, sessionId, "assistant-1", "assistant");
+    useSessionActivityStore.getState().markAssistantOutput(workspaceId, sessionId, "assistant-1");
+    const before = useSessionActivityStore.getState().recordsByWorkspaceId[workspaceId]?.[sessionId];
+    let notifications = 0;
+    const unsubscribe = useSessionActivityStore.subscribe(() => {
+      notifications += 1;
+    });
+
+    useSessionActivityStore.getState().markMessageRole(workspaceId, sessionId, "assistant-1", "assistant");
+    useSessionActivityStore.getState().markAssistantOutput(workspaceId, sessionId, "assistant-1");
+    useSessionActivityStore.getState().replaceWaitingRequests(workspaceId, sessionId, "permission", []);
+    useSessionActivityStore.getState().clearError(workspaceId, sessionId);
+    useSessionActivityStore.getState().setCompacting(workspaceId, sessionId, false);
+
+    unsubscribe();
+    expect(useSessionActivityStore.getState().recordsByWorkspaceId[workspaceId]?.[sessionId]).toBe(before);
+    expect(notifications).toBe(0);
+  });
+
   test("invalidates the durable snapshot when a tracked run becomes idle", () => {
     const { input, cleanup, releaseSession } = createTestSync();
     const queryClient = getReactQueryClient();

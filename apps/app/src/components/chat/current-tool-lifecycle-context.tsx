@@ -15,14 +15,20 @@ type CurrentToolLifecycleContextValue = {
 
 const CurrentToolLifecycleContext = React.createContext<CurrentToolLifecycleContextValue | null>(null)
 
+export function toolCallIdsKey(toolCallIds: ReadonlySet<string>): string {
+  return JSON.stringify([...toolCallIds].sort())
+}
+
 export function CurrentToolLifecycleProvider({
   activityStatus,
   currentToolCallIds,
   children,
 }: CurrentToolLifecycleContextValue & { children: React.ReactNode }) {
+  const idsKey = toolCallIdsKey(currentToolCallIds)
+  const stableToolCallIds = React.useMemo(() => currentToolCallIds, [idsKey])
   const value = React.useMemo(
-    () => ({ activityStatus, currentToolCallIds }),
-    [activityStatus, currentToolCallIds],
+    () => ({ activityStatus, currentToolCallIds: stableToolCallIds }),
+    [activityStatus, stableToolCallIds],
   )
 
   return (

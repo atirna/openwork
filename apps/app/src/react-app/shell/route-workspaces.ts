@@ -324,6 +324,39 @@ export function orderRouteWorkspaces(workspaces: RouteWorkspace[], orderIds: str
   return ordered;
 }
 
+/**
+ * Capture the first visible workspace order and extend it without letting the
+ * server's active-workspace-first list reshuffle existing sidebar entries.
+ * IDs that are temporarily absent stay in the preference so a transient
+ * discovery gap cannot move them when they return.
+ */
+export function stabilizeRouteWorkspaceOrder(
+  workspaces: RouteWorkspace[],
+  orderIds: string[],
+): { orderIds: string[]; workspaces: RouteWorkspace[] } {
+  const stableOrderIds: string[] = [];
+  const seenIds = new Set<string>();
+
+  for (const value of orderIds) {
+    const id = value.trim();
+    if (!id || seenIds.has(id)) continue;
+    stableOrderIds.push(id);
+    seenIds.add(id);
+  }
+
+  for (const workspace of workspaces) {
+    const id = workspace.id.trim();
+    if (!id || seenIds.has(id)) continue;
+    stableOrderIds.push(id);
+    seenIds.add(id);
+  }
+
+  return {
+    orderIds: stableOrderIds,
+    workspaces: orderRouteWorkspaces(workspaces, stableOrderIds),
+  };
+}
+
 export function toSessionGroups(
   workspaces: RouteWorkspace[],
   sessionsByWorkspaceId: Record<string, RouteSession[]>,

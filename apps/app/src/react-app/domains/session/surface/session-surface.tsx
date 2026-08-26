@@ -66,7 +66,7 @@ import { getSessionActivityStatusLabel, useSessionActivityStore, type SessionAct
 import { PermissionApprovalPanel } from "@/react-app/domains/session/chat/permission-approval-modal";
 import { QuestionPanel } from "@/react-app/domains/session/modals/question-modal";
 import { QueuedMessagesPanel } from "@/react-app/domains/session/modals/queued-messages-panel";
-import { deriveOpenTargets, selectAutoOpenTarget, type OpenTarget } from "@/react-app/domains/session/artifacts/open-target";
+import { deriveOpenTargets, sameOpenTargets, selectAutoOpenTarget, type OpenTarget } from "@/react-app/domains/session/artifacts/open-target";
 import { usePanelTabStore } from "@/react-app/domains/session/panel/panel-tab-store";
 import {
   markSessionSnapshotFetchStart,
@@ -971,6 +971,10 @@ export function SessionSurface(props: SessionSurfaceProps) {
 
     return [...baseRenderedMessages, ...evalMarkdownMessages];
   }, [baseRenderedMessages, evalMarkdownMessages]);
+  const renderedMessagesRef = useRef(renderedMessages);
+  useEffect(() => {
+    renderedMessagesRef.current = renderedMessages;
+  }, [renderedMessages]);
   const seedMarkdownPrimitiveControlAction = useMemo<OpenworkControlAction | null>(() => {
     if (!import.meta.env.DEV) return null;
 
@@ -1121,6 +1125,9 @@ export function SessionSurface(props: SessionSurfaceProps) {
 
   useEffect(() => {
     let cancelled = false;
+    const updateVerifiedOpenTargets = (targets: OpenTarget[]) => {
+      setVerifiedOpenTargets((current) => sameOpenTargets(current, targets) ? current : targets);
+    };
     function initializeAutoOpenState(targets: OpenTarget[]) {
       if (initializedAutoOpenSessionRef.current === props.sessionId) return;
       initializedAutoOpenSessionRef.current = props.sessionId;
@@ -1130,7 +1137,7 @@ export function SessionSurface(props: SessionSurfaceProps) {
     async function verifyTargets() {
       if (!openTargets.length) {
         initializeAutoOpenState([]);
-        setVerifiedOpenTargets([]);
+        updateVerifiedOpenTargets([]);
         return;
       }
       try {
@@ -1138,13 +1145,13 @@ export function SessionSurface(props: SessionSurfaceProps) {
         if (!cancelled) {
           const nextTargets = response.items as OpenTarget[];
           initializeAutoOpenState(nextTargets);
-          setVerifiedOpenTargets(nextTargets);
+          updateVerifiedOpenTargets(nextTargets);
         }
       } catch {
         if (!cancelled) {
           const nextTargets = openTargets.map((target) => ({ ...target, exists: target.kind === "url" }));
           initializeAutoOpenState(nextTargets);
-          setVerifiedOpenTargets(nextTargets);
+          updateVerifiedOpenTargets(nextTargets);
         }
       }
     }
@@ -1500,7 +1507,7 @@ export function SessionSurface(props: SessionSurfaceProps) {
     props.onDraftChange(buildDraft(draft, attachments));
   }, [attachments, buildDraft, draft, props.onDraftChange]);
 
-  const handleAttachFiles = (files: File[]) => {
+  const handleAttachFiles = useCallback((files: File[]) => {
     if (!props.attachmentsEnabled) {
       toast.warning(props.attachmentsDisabledReason ?? "Attachments are unavailable.");
       return;
@@ -1530,18 +1537,26 @@ export function SessionSurface(props: SessionSurfaceProps) {
       props.sessionId,
       `${draft}${next.map((attachment) => `[attachment ${attachment.id}]`).join("")}`,
     );
-  };
+  }, [
+    attachments,
+    draft,
+    props.attachmentsDisabledReason,
+    props.attachmentsEnabled,
+    props.sessionId,
+    setComposerAttachments,
+    setComposerDraft,
+  ]);
 
-  const handleRemoveAttachment = (id: string) => {
+  const handleRemoveAttachment = useCallback((id: string) => {
     const target = attachments.find((item) => item.id === id);
     if (target?.previewUrl) {
       URL.revokeObjectURL(target.previewUrl);
     }
     setComposerAttachments(props.sessionId, attachments.filter((item) => item.id !== id));
     setComposerDraft(props.sessionId, draft.replaceAll(`[attachment ${id}]`, ""));
-  };
+  }, [attachments, draft, props.sessionId, setComposerAttachments, setComposerDraft]);
 
-  const handleInsertMention = (kind: ComposerMentionKind, value: string) => {
+  const handleInsertMention = useCallback((kind: ComposerMentionKind, value: string) => {
     // @agent mentions switch the session agent instead of inserting an agent
     // part. Agent parts are treated as *subagent* (task tool) calls by the
     // engine, which silently fails for primary agents and left every reply
@@ -1574,32 +1589,32 @@ export function SessionSurface(props: SessionSurfaceProps) {
         }
       })();
     }
-  };
+  }, [draft, mentions, props.onSelectAgent, props.sessionId, setComposerDraft, setComposerMentions]);
 
-  const handlePasteText = (text: string) => {
+  const handlePasteText = useCallback((text: string) => {
     const pasted = createPastedTextChip(text);
     setComposerPasteParts(props.sessionId, [...pasteParts, pasted]);
     setComposerDraft(props.sessionId, `${draft}[pasted text ${pasted.label}]`);
-  };
+  }, [draft, pasteParts, props.sessionId, setComposerDraft, setComposerPasteParts]);
 
-  const handleExpandPastedText = (id: string) => {
+  const handleExpandPastedText = useCallback((id: string) => {
     const part = pasteParts.find((item) => item.id === id);
     if (!part) return;
     setComposerDraft(props.sessionId, draft.replace(`[pasted text ${part.label}]`, part.text));
     setComposerPasteParts(props.sessionId, pasteParts.filter((item) => item.id !== id));
-  };
+  }, [draft, pasteParts, props.sessionId, setComposerDraft, setComposerPasteParts]);
 
-  const handleRemovePastedText = (id: string) => {
+  const handleRemovePastedText = useCallback((id: string) => {
     const target = pasteParts.find((item) => item.id === id);
     if (!target) return;
     setComposerDraft(props.sessionId, draft.replace(`[pasted text ${target.label}]`, ""));
     setComposerPasteParts(props.sessionId, pasteParts.filter((item) => item.id !== id));
-  };
+  }, [draft, pasteParts, props.sessionId, setComposerDraft, setComposerPasteParts]);
 
-  const handleUnsupportedFileLinks = (links: string[]) => {
+  const handleUnsupportedFileLinks = useCallback((links: string[]) => {
     if (!links.length) return;
     setComposerDraft(props.sessionId, `${draft}${draft && !draft.endsWith("\n") ? "\n" : ""}${links.join("\n")}`);
-  };
+  }, [draft, props.sessionId, setComposerDraft]);
 
   const typeComposerText = useCallback(async (text: string, revertMessageId?: string | null) => {
     window.dispatchEvent(new Event("openwork:focusPrompt"));
@@ -1673,7 +1688,7 @@ export function SessionSurface(props: SessionSurfaceProps) {
   }), [chatStreaming, handleAbort]);
   useControlAction(props.isControlTarget ? composerStopControlAction : null);
 
-  const listSkills = async (): Promise<SkillCard[]> => {
+  const listSkills = useCallback(async (): Promise<SkillCard[]> => {
     const pushId = ++skillsConnectPushRef.current;
     // Paint cached Connect inventory instantly; the fresh fan-out lands live.
     const scope = readCloudInventoryScope();
@@ -1695,9 +1710,9 @@ export function SessionSurface(props: SessionSurfaceProps) {
     const next = [...localSkills, ...cachedConnect.skills];
     setToolSkills(next);
     return next;
-  };
+  }, [props.client, props.workspaceId]);
 
-  const listMcp = async (): Promise<{ servers: McpServerEntry[]; statuses: McpStatusMap; status: string | null }> => {
+  const listMcp = useCallback(async (): Promise<{ servers: McpServerEntry[]; statuses: McpStatusMap; status: string | null }> => {
     const pushId = ++mcpConnectPushRef.current;
     const scope = readCloudInventoryScope();
     const cachedConnect = (scope ? readCachedConnectCapabilities(scope) : null) ?? EMPTY_CONNECT_CAPABILITY_INVENTORY;
@@ -1761,9 +1776,9 @@ export function SessionSurface(props: SessionSurfaceProps) {
     setToolMcpStatus(status);
 
     return { servers, statuses, status };
-  };
+  }, [opencodeClient, props.client, props.workspaceId, props.workspaceRoot]);
 
-  const listImportedPlugins = async (): Promise<CloudImportedPlugin[]> => {
+  const listImportedPlugins = useCallback(async (): Promise<CloudImportedPlugin[]> => {
     const pushId = ++pluginConnectPushRef.current;
     const scope = readCloudInventoryScope();
     const cachedConnect = (scope ? readCachedConnectCapabilities(scope) : null) ?? EMPTY_CONNECT_CAPABILITY_INVENTORY;
@@ -1775,9 +1790,9 @@ export function SessionSurface(props: SessionSurfaceProps) {
     const plugins = connectPluginsForComposer(cachedConnect.plugins);
     setToolImportedPlugins(plugins);
     return plugins;
-  };
+  }, []);
 
-  const handleUploadInboxFiles = async (files: File[]) => {
+  const handleUploadInboxFiles = useCallback(async (files: File[]) => {
     const input = files.filter(Boolean);
     if (!input.length) return;
     try {
@@ -1787,7 +1802,7 @@ export function SessionSurface(props: SessionSurfaceProps) {
       toast.warning(nextError instanceof Error ? nextError.message : "Shared folder upload failed");
       throw nextError;
     }
-  };
+  }, [props.client, props.workspaceId]);
 
   const scrollRef = useRef<HTMLDivElement>(null);
   const contentRef = useRef<HTMLDivElement>(null);
@@ -1980,8 +1995,8 @@ export function SessionSurface(props: SessionSurfaceProps) {
   const handleForkAtMessage = useCallback((messageId: string) => {
     // OpenCode's fork copies messages strictly before the given id, so pass
     // the next real message to make the branch include the clicked message.
-    props.onForkAtMessage?.(resolveForkBoundaryId(renderedMessages, messageId), props.sessionId);
-  }, [props.onForkAtMessage, props.sessionId, renderedMessages]);
+    props.onForkAtMessage?.(resolveForkBoundaryId(renderedMessagesRef.current, messageId), props.sessionId);
+  }, [props.onForkAtMessage, props.sessionId]);
 
   const handleEditUserMessage = useCallback((messageId: string, text: string) => {
     // Preserve the boundary with the draft; the destructive revert is deferred
@@ -2228,7 +2243,6 @@ export function SessionSurface(props: SessionSurfaceProps) {
             <span className="text-amber-11/70">Add a provider to run tasks.</span>
           </button>
         ) : null}
-        <DevProfiler id="SessionComposer">
         {props.cloudMcpSubmissionState.status === "failed" ? (
           <div
             className="mx-3 mb-2 flex items-center gap-3 rounded-xl border border-red-7/40 bg-red-2/40 px-3 py-2 text-xs text-red-11"
@@ -2350,7 +2364,6 @@ export function SessionSurface(props: SessionSurfaceProps) {
             ) : null
           }
         />
-        </DevProfiler>
       </div>
       {/* Error display moved inline into the session conversation area */}
       {props.developerMode ? <SessionDebugPanel model={model} snapshot={snapshot} /> : null}

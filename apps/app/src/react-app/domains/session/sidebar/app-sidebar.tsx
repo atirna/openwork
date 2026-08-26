@@ -1385,6 +1385,7 @@ function WorkspaceReorderItem({
       as="div"
       value={group.workspace.id}
       id={group.workspace.id}
+      data-sidebar-workspace-id={group.workspace.id}
       layout="position"
       dragElastic={0}
       dragListener={false}
@@ -1451,6 +1452,7 @@ function WorkspaceHeader({
         )}
       </SidebarGlyphSlot>
       <div
+        data-sidebar-workspace-drag-handle
         className="min-w-0 flex-1 cursor-grab touch-none active:cursor-grabbing pr-8 group-hover/workspace-header:pr-20 group-has-[[data-workspace-actions]:focus-within]/workspace-header:pr-20 group-has-data-popup-open/workspace-header:pr-20"
         onPointerDown={onTitlePointerDown}
       >

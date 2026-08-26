@@ -5,6 +5,7 @@ import {
   mergeRouteWorkspaces,
   readRouteSessionsWithRetry,
   refreshRouteWorkspaceListState,
+  stabilizeRouteWorkspaceOrder,
 } from "../src/react-app/shell/route-workspaces";
 import {
   mergeWorkspaceRouteSession,
@@ -214,6 +215,50 @@ describe("workspace route list merging", () => {
     expect(result.workspaces.map((workspace) => workspace.id)).toEqual([
       "workspace-known",
       "workspace-desktop",
+    ]);
+  });
+
+  test("captures the first visible order so active-workspace refreshes cannot reshuffle the sidebar", () => {
+    const alpha = { ...previouslyKnownWorkspaces[0], id: "workspace-alpha" };
+    const beta = { ...desktopWorkspaces[0], id: "workspace-beta" };
+    const initial = stabilizeRouteWorkspaceOrder([alpha, beta], []);
+    const afterBetaActivation = stabilizeRouteWorkspaceOrder([beta, alpha], initial.orderIds);
+
+    expect(initial.orderIds).toEqual(["workspace-alpha", "workspace-beta"]);
+    expect(afterBetaActivation.workspaces.map((workspace) => workspace.id)).toEqual([
+      "workspace-alpha",
+      "workspace-beta",
+    ]);
+  });
+
+  test("appends newly discovered workspaces without displacing the saved order", () => {
+    const alpha = { ...previouslyKnownWorkspaces[0], id: "workspace-alpha" };
+    const beta = { ...desktopWorkspaces[0], id: "workspace-beta" };
+    const gamma = { ...desktopWorkspaces[0], id: "workspace-gamma" };
+    const stable = stabilizeRouteWorkspaceOrder(
+      [beta, gamma, alpha],
+      ["workspace-alpha", "workspace-beta"],
+    );
+
+    expect(stable.orderIds).toEqual([
+      "workspace-alpha",
+      "workspace-beta",
+      "workspace-gamma",
+    ]);
+    expect(stable.workspaces.map((workspace) => workspace.id)).toEqual(stable.orderIds);
+  });
+
+  test("keeps temporarily absent workspace positions for the next successful refresh", () => {
+    const alpha = { ...previouslyKnownWorkspaces[0], id: "workspace-alpha" };
+    const beta = { ...desktopWorkspaces[0], id: "workspace-beta" };
+    const duringGap = stabilizeRouteWorkspaceOrder([beta], ["workspace-alpha", "workspace-beta"]);
+    const recovered = stabilizeRouteWorkspaceOrder([beta, alpha], duringGap.orderIds);
+
+    expect(duringGap.orderIds).toEqual(["workspace-alpha", "workspace-beta"]);
+    expect(duringGap.workspaces.map((workspace) => workspace.id)).toEqual(["workspace-beta"]);
+    expect(recovered.workspaces.map((workspace) => workspace.id)).toEqual([
+      "workspace-alpha",
+      "workspace-beta",
     ]);
   });
 });

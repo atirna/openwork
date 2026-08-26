@@ -28,6 +28,23 @@ export type OpenTarget = {
   updatedAt?: number;
 };
 
+export function sameOpenTargets(left: OpenTarget[], right: OpenTarget[]): boolean {
+  return left.length === right.length && left.every((target, index) => {
+    const other = right[index];
+    return other !== undefined
+      && target.id === other.id
+      && target.kind === other.kind
+      && target.value === other.value
+      && target.name === other.name
+      && target.preview === other.preview
+      && target.confidence === other.confidence
+      && target.reason === other.reason
+      && target.exists === other.exists
+      && target.size === other.size
+      && target.updatedAt === other.updatedAt;
+  });
+}
+
 const WORKSPACES_PREFIX_PATTERN = /^workspaces\/[^/]+\//i;
 const WORKSPACE_ID_PREFIX_PATTERN = /^workspace\/(?:ws_[^/]+|\d+|[0-9a-f-]{6,})\//i;
 
