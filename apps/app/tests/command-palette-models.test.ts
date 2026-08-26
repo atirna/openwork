@@ -52,6 +52,7 @@ describe("command palette models", () => {
   test("navigates behavior to models to root", () => {
     expect(commandPaletteBackMode("model-behavior")).toBe("models");
     expect(commandPaletteBackMode("models")).toBe("root");
+    expect(commandPaletteBackMode("split-sessions")).toBe("root");
     expect(commandPaletteBackMode("root")).toBeNull();
   });
 });

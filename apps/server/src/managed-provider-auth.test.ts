@@ -3,6 +3,12 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
+import {
+  clearEnginePoolForConfig,
+  setEnginePoolForConfig,
+  type EnginePool,
+  type EnginePoolConnection,
+} from "./engine-pool.js";
 import { resetManagedProviderAuthCache, syncManagedProviderAuth } from "./managed-provider-auth.js";
 import { ENGINE_GLOBAL_RUNTIME_CONFIG_ID, writeRuntimeOpencodeConfig } from "./runtime-opencode-config-store.js";
 import type { ServerConfig } from "./types.js";
@@ -23,6 +29,21 @@ function stubFetch(status = 200) {
     return new Response(status >= 400 ? "nope" : "{}", { status });
   }) as unknown as typeof globalThis.fetch;
   return { calls, impl };
+}
+
+function deferred(): { promise: Promise<void>; resolve: () => void } {
+  let resolve: () => void = () => {
+    throw new Error("Deferred promise was not initialized");
+  };
+  const promise = new Promise<void>((done) => {
+    resolve = done;
+  });
+  return { promise, resolve };
+}
+
+function installManagedPool(config: ServerConfig, connection: () => EnginePoolConnection): void {
+  const pool = { connections: () => [connection()] } as unknown as EnginePool;
+  setEnginePoolForConfig(config, pool);
 }
 
 async function makeConfig(dir: string): Promise<ServerConfig> {
@@ -205,6 +226,30 @@ describe("managed provider auth delivery", () => {
     await rm(dir, { recursive: true, force: true });
   });
 
+  test("never transfers deletion ownership to a different attached engine target", async () => {
+    const config = await makeConfig(dir);
+    await seedProvider(config, { id: "anthropic", env: ["ANTHROPIC_API_KEY"] });
+    const fetchStub = stubFetch();
+    const env = { list: async () => [{ key: "ANTHROPIC_API_KEY", value: "sk-ant-secret" }] };
+    await syncManagedProviderAuth({ config, env, fetchImpl: fetchStub.impl });
+
+    config.opencodeBaseUrl = "http://127.0.0.1:40000";
+    await writeRuntimeOpencodeConfig(config, ENGINE_GLOBAL_RUNTIME_CONFIG_ID, (current) => ({
+      ...current,
+      provider: {},
+    }));
+    const differentTarget = await syncManagedProviderAuth({ config, env, fetchImpl: fetchStub.impl });
+
+    expect(differentTarget.removed).toEqual([]);
+    expect(fetchStub.calls.filter((call) => call.method === "DELETE")).toHaveLength(0);
+
+    config.opencodeBaseUrl = "http://127.0.0.1:39999";
+    const originalTarget = await syncManagedProviderAuth({ config, env, fetchImpl: fetchStub.impl });
+    expect(originalTarget.removed).toEqual([PROVIDER]);
+    expect(fetchStub.calls.filter((call) => call.method === "DELETE")).toHaveLength(1);
+    await rm(dir, { recursive: true, force: true });
+  });
+
   test("never touches providers this process did not deliver", async () => {
     const config = await makeConfig(dir);
     // No managed providers at all: a desktop user's own engine credentials must
@@ -258,6 +303,106 @@ describe("managed provider auth delivery", () => {
 
     expect(afterRestart.delivered).toEqual([PROVIDER]);
     expect(fetchStub.calls.filter((call) => call.method === "PUT")).toHaveLength(2);
+    await rm(dir, { recursive: true, force: true });
+  });
+
+  test("keys applied credentials to the managed engine generation even when the replacement reuses its URL", async () => {
+    const config = await makeConfig(dir);
+    await seedProvider(config, { id: "anthropic", env: ["ANTHROPIC_API_KEY"] });
+    const fetchStub = stubFetch();
+    const env = { list: async () => [{ key: "ANTHROPIC_API_KEY", value: "sk-ant-secret" }] };
+    let generationId = "generation-one";
+    installManagedPool(config, () => ({
+      generationId,
+      role: "primary",
+      baseUrl: "http://127.0.0.1:39999",
+      username: "engine-user",
+      password: "engine-pass",
+    }));
+
+    await syncManagedProviderAuth({ config, env, fetchImpl: fetchStub.impl });
+    generationId = "generation-two";
+    const afterReplacement = await syncManagedProviderAuth({ config, env, fetchImpl: fetchStub.impl });
+
+    expect(afterReplacement.delivered).toEqual([PROVIDER]);
+    expect(fetchStub.calls.filter((call) => call.method === "PUT")).toHaveLength(2);
+    clearEnginePoolForConfig(config);
+    await rm(dir, { recursive: true, force: true });
+  });
+
+  test("removes owned credentials after replacement even when the new generation has no applied fingerprint", async () => {
+    const config = await makeConfig(dir);
+    await seedProvider(config, { id: "anthropic", env: ["ANTHROPIC_API_KEY"] });
+    const fetchStub = stubFetch();
+    const env = { list: async () => [{ key: "ANTHROPIC_API_KEY", value: "sk-ant-secret" }] };
+    let generationId = "generation-one";
+    installManagedPool(config, () => ({
+      generationId,
+      role: "primary",
+      baseUrl: "http://127.0.0.1:39999",
+      username: "engine-user",
+      password: "engine-pass",
+    }));
+
+    await syncManagedProviderAuth({ config, env, fetchImpl: fetchStub.impl });
+    generationId = "generation-two";
+    await writeRuntimeOpencodeConfig(config, ENGINE_GLOBAL_RUNTIME_CONFIG_ID, (current) => ({
+      ...current,
+      provider: {},
+    }));
+    const afterReplacement = await syncManagedProviderAuth({ config, env, fetchImpl: fetchStub.impl });
+
+    expect(afterReplacement.removed).toEqual([PROVIDER]);
+    expect(fetchStub.calls.filter((call) => call.method === "DELETE")).toHaveLength(1);
+    clearEnginePoolForConfig(config);
+    await rm(dir, { recursive: true, force: true });
+  });
+
+  test("serializes reconciliation and ignores a completion from an obsolete managed engine generation", async () => {
+    const config = await makeConfig(dir);
+    await seedProvider(config, { id: "anthropic", env: ["ANTHROPIC_API_KEY"] });
+    const env = { list: async () => [{ key: "ANTHROPIC_API_KEY", value: "sk-ant-secret" }] };
+    const firstFetchStarted = deferred();
+    const releaseFirstFetch = deferred();
+    const calledGenerations: string[] = [];
+    let generationId = "generation-one";
+    installManagedPool(config, () => ({
+      generationId,
+      role: "primary",
+      baseUrl: "http://127.0.0.1:39999",
+      username: "engine-user",
+      password: "engine-pass",
+    }));
+    const fetchImpl = (async () => {
+      const calledGeneration = generationId;
+      calledGenerations.push(calledGeneration);
+      if (calledGeneration === "generation-one") {
+        firstFetchStarted.resolve();
+        await releaseFirstFetch.promise;
+      }
+      return new Response("{}", { status: 200 });
+    }) as unknown as typeof globalThis.fetch;
+
+    const obsolete = syncManagedProviderAuth({ config, env, fetchImpl });
+    await firstFetchStarted.promise;
+    generationId = "generation-two";
+    const current = syncManagedProviderAuth({ config, env, fetchImpl });
+
+    expect(calledGenerations).toEqual(["generation-one"]);
+    releaseFirstFetch.resolve();
+    const [obsoleteResult, currentResult] = await Promise.all([obsolete, current]);
+
+    expect(obsoleteResult.delivered).toEqual([]);
+    expect(currentResult.delivered).toEqual([PROVIDER]);
+    expect(calledGenerations).toEqual(["generation-one", "generation-two"]);
+    const unchanged = await syncManagedProviderAuth({ config, env, fetchImpl });
+    expect(unchanged.unchanged).toEqual([PROVIDER]);
+    expect(calledGenerations).toHaveLength(2);
+    generationId = "generation-one";
+    const reusedGeneration = await syncManagedProviderAuth({ config, env, fetchImpl });
+    expect(reusedGeneration.delivered).toEqual([PROVIDER]);
+    expect(calledGenerations).toEqual(["generation-one", "generation-two", "generation-one"]);
+    clearEnginePoolForConfig(config);
     await rm(dir, { recursive: true, force: true });
   });
 });

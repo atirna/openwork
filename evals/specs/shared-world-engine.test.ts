@@ -12,12 +12,14 @@ test("shared world files are discovered, path-loadable, consent-gated, and detac
   const discovered = await discoverWorlds(WORLDS_DIRECTORY);
   assert.deepEqual(discovered.map((world) => world.name), [
     "azure-byok",
+    "cross-workspace-split-view",
     "desktop-prod-live",
     "dev-headless",
     "headless-prod-live",
   ]);
 
   const azureByok = await loadWorldFile(join(WORLDS_DIRECTORY, "azure-byok.ts"));
+  const crossWorkspaceSplitView = await loadWorldFile(join(WORLDS_DIRECTORY, "cross-workspace-split-view.ts"));
   const devHeadless = await loadWorldFile(join(WORLDS_DIRECTORY, "dev-headless.ts"));
   const headlessProduction = await loadWorldFile(join(WORLDS_DIRECTORY, "headless-prod-live.ts"));
   const desktopProduction = await loadWorldFile(join(WORLDS_DIRECTORY, "desktop-prod-live.ts"));
@@ -25,6 +27,10 @@ test("shared world files are discovered, path-loadable, consent-gated, and detac
   assert.equal(azureByok.definition.adapter, "eval");
   assert.equal(azureByok.definition.detached, true);
   assert.equal(azureByok.definition.requiresSharedState, false);
+  assert.equal(crossWorkspaceSplitView.defaultName, "cross-workspace-split-view");
+  assert.equal(crossWorkspaceSplitView.definition.adapter, "eval");
+  assert.equal(crossWorkspaceSplitView.definition.detached, true);
+  assert.equal(crossWorkspaceSplitView.definition.requiresSharedState, false);
   assert.equal(devHeadless.defaultName, "dev-headless");
   assert.equal(devHeadless.definition.detached, true);
   assert.deepEqual(devHeadless.definition.topology, {
@@ -85,7 +91,7 @@ test("shared world files are discovered, path-loadable, consent-gated, and detac
 
   evidence.recordAssertionEvidence(
     "Root world files are auto-discovered and path-loadable",
-    "Discovery returned all four approved files, and loading retained each adapter/topology contract.",
+    "Discovery returned all five approved files, and loading retained each adapter/topology contract.",
     true,
   );
   evidence.recordAssertionEvidence(

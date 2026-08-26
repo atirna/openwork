@@ -25,7 +25,7 @@ import {
   CommandShortcut,
 } from "@/components/ui/command";
 import { Button } from "@/components/ui/button";
-import { BrainCircuit, Check, ChevronLeftIcon, FileText, FolderInput, Globe, Zap } from "lucide-react";
+import { BrainCircuit, Check, ChevronLeftIcon, Columns2, FileText, FolderInput, Globe, Zap } from "lucide-react";
 import type { ModelOption, ModelRef } from "@/app/types";
 import { ProviderIcon } from "@/react-app/design-system/provider-icon";
 import { usePlatform } from "../kernel/platform";
@@ -39,6 +39,7 @@ import {
   commandPaletteBackMode,
   type CommandPaletteMode,
 } from "./command-palette-models";
+import { buildCommandPaletteSplitSessions, type CommandPaletteSessionRef } from "./command-palette-sessions";
 
 export type PaletteItem = {
   id: string;
@@ -108,6 +109,9 @@ export type CommandPaletteProps = {
   onClose: () => void;
   /** Called when a session row is chosen. */
   onOpenSession: (workspaceId: string, sessionId: string) => void;
+  /** Opens a chosen session beside the current session without navigating away. */
+  onOpenSessionInSplit?: (workspaceId: string, sessionId: string) => void;
+  currentSession?: CommandPaletteSessionRef | null;
   /** Called when "New session" is chosen. */
   onCreateNewSession: () => void;
   /** Called when "Open settings" is chosen. Accepts an optional route to jump straight to a tab. */
@@ -229,6 +233,19 @@ export function CommandPalette(props: CommandPaletteProps) {
         setMode("sessions");
       },
     },
+    ...(props.onOpenSessionInSplit && props.currentSession
+      ? [{
+          id: "open-in-split-view",
+          title: "Open in split view…",
+          detail: "Choose any session, including one from another workspace",
+          meta: "Workbench",
+          icon: <Columns2 className="text-primary" />,
+          searchText: "split view side by side session workspace",
+          action: () => {
+            setMode("split-sessions");
+          },
+        }]
+      : []),
     {
       id: "session-number-shortcuts",
       ...sessionNumberHelp,
@@ -386,6 +403,22 @@ export function CommandPalette(props: CommandPaletteProps) {
         },
       })),
     [props],
+  );
+
+  const splitSessionItems = useMemo<PaletteItem[]>(
+    () => buildCommandPaletteSplitSessions(props.sessions, props.currentSession).map((item) => ({
+      id: `split-session:${item.workspaceId}:${item.sessionId}`,
+      title: item.title,
+      detail: item.workspaceTitle,
+      meta: item.isActive ? t("session.cmd_current_workspace") : "Other workspace",
+      icon: <Columns2 className="text-muted-foreground" />,
+      searchText: `${item.searchText} split side by side`,
+      action: () => {
+        props.onOpenSessionInSplit?.(item.workspaceId, item.sessionId);
+        props.onClose();
+      },
+    })),
+    [props.currentSession, props.onClose, props.onOpenSessionInSplit, props.sessions],
   );
 
   const accessibleItems = useMemo<PaletteItem[]>(() => {
@@ -549,6 +582,8 @@ export function CommandPalette(props: CommandPaletteProps) {
 
   const items = mode === "sessions"
     ? sessionItems
+    : mode === "split-sessions"
+      ? splitSessionItems
     : mode === "accessible-items"
       ? accessibleItems
       : mode === "agents"
@@ -567,6 +602,8 @@ export function CommandPalette(props: CommandPaletteProps) {
         <CommandDialogTitle>
           {mode === "sessions"
             ? t("session.palette_title_sessions")
+            : mode === "split-sessions"
+              ? "Open in split view"
             : mode === "accessible-items"
               ? "Accessible items"
               : mode === "agents"
@@ -598,6 +635,8 @@ export function CommandPalette(props: CommandPaletteProps) {
               placeholder={
                 mode === "sessions"
                   ? t("session.palette_placeholder_sessions")
+                  : mode === "split-sessions"
+                    ? "Search sessions and workspaces..."
                   : mode === "accessible-items"
                     ? "Search servers and artifacts..."
                     : mode === "agents"
@@ -620,6 +659,7 @@ export function CommandPalette(props: CommandPaletteProps) {
                 <CommandItem
                   key={item.id}
                   value={item}
+                  data-command-palette-item={item.id}
                   disabled={item.disabled}
                   onClick={item.action}
                 >

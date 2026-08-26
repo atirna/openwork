@@ -11,11 +11,9 @@ import { useUiStateStore } from "./ui-state-store";
 export function OpenworkContextPublisher() {
   const location = useLocation();
   const revision = useWorkbenchStore((state) => state.revision);
-  const workspaceId = useWorkbenchStore((state) => state.workspaceId);
-  const workspaceTitle = useWorkbenchStore((state) => state.workspaceTitle);
-  const primarySessionId = useWorkbenchStore((state) => state.primarySessionId);
+  const primary = useWorkbenchStore((state) => state.primary);
   const tabs = useWorkbenchStore((state) => state.tabs);
-  const splitSessionId = useWorkbenchStore((state) => state.splitSessionId);
+  const secondary = useWorkbenchStore((state) => state.secondary);
   const focusedPane = useWorkbenchStore((state) => state.focusedPane);
   const sidebarOpen = useUiStateStore((state) => state.sidebarOpen);
   const sidePanelState = useUiStateStore((state) => state.sidePanelState);
@@ -30,11 +28,9 @@ export function OpenworkContextPublisher() {
     capturedAt: new Date().toISOString(),
     workbench: {
       revision,
-      workspaceId,
-      workspaceTitle,
-      primarySessionId,
+      primary,
       tabs,
-      splitSessionId,
+      secondary,
       focusedPane,
     },
     ui: {
@@ -49,15 +45,13 @@ export function OpenworkContextPublisher() {
     applicationMenuVisible,
     focusedPane,
     panelSessions,
-    primarySessionId,
+    primary,
     revision,
     route,
     sidebarOpen,
     sidePanelState,
-    splitSessionId,
+    secondary,
     tabs,
-    workspaceId,
-    workspaceTitle,
     workspaceRightSidebarExpanded,
   ]);
 

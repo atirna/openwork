@@ -150,7 +150,7 @@ import {
   sidebarRowPaddingInlineStart,
 } from "./sidebar-lanes";
 import { WorkspaceAvatarPicker } from "./workspace-avatar-picker";
-import { useWorkbenchStore } from "../chat/workbench-store";
+import { isSameWorkbenchSession, useWorkbenchStore } from "../chat/workbench-store";
 import { SidebarDestination } from "./sidebar-destination";
 import { SessionTitle } from "./session-title";
 
@@ -249,6 +249,8 @@ type SessionActionsProps = {
   className: string;
   sessionId: string;
   workspaceId: string;
+  sessionTitle?: string;
+  workspaceTitle?: string;
   isPinned: boolean;
   isArchived: boolean;
 };
@@ -257,29 +259,46 @@ type SessionMenuContentProps = {
   variant: "dropdown" | "context";
   sessionId: string;
   workspaceId: string;
+  sessionTitle?: string;
+  workspaceTitle?: string;
   isPinned: boolean;
   isArchived: boolean;
 };
 
-function SessionMenuContent({ variant, sessionId, workspaceId, isPinned, isArchived }: SessionMenuContentProps) {
+function SessionMenuContent({
+  variant,
+  sessionId,
+  workspaceId,
+  sessionTitle,
+  workspaceTitle,
+  isPinned,
+  isArchived,
+}: SessionMenuContentProps) {
   const ctx = useSidebarContext();
   const { groups, assignments } = useWorkspaceGroups(workspaceId);
   const store = useSessionManagementStore;
   const assignedGroupId = assignments[sessionId] ?? null;
 
-  // Sidebar rows are the vertical tabs: any non-active session in the current
-  // workspace can be opened side-by-side with the active one.
-  const splitSessionId = useWorkbenchStore((state) => state.splitSessionId);
-  const isInSplit = Boolean(splitSessionId)
-    && (splitSessionId === sessionId || sessionId === ctx.selectedSessionId);
-  const canOpenInSplit = !isInSplit
-    && workspaceId === ctx.selectedWorkspaceId
-    && Boolean(ctx.selectedSessionId)
-    && sessionId !== ctx.selectedSessionId;
+  // Sidebar rows are the vertical tabs: any session can be opened beside the
+  // primary session, including one owned by another workspace.
+  const primary = useWorkbenchStore((state) => state.primary);
+  const secondary = useWorkbenchStore((state) => state.secondary);
+  const sessionRef = { workspaceId, sessionId };
+  const isInSplit = Boolean(secondary)
+    && (isSameWorkbenchSession(sessionRef, primary) || isSameWorkbenchSession(sessionRef, secondary));
+  const canOpenInSplit = Boolean(primary)
+    && !isSameWorkbenchSession(sessionRef, primary)
+    && !isSameWorkbenchSession(sessionRef, secondary);
   const openInSplitView = () => {
+    const tab = {
+      workspaceId,
+      workspaceTitle: workspaceTitle?.trim() || workspaceId,
+      sessionId,
+      title: sessionTitle,
+    };
     const workbench = useWorkbenchStore.getState();
-    workbench.openTab({ workspaceId, sessionId });
-    workbench.setSplit(sessionId);
+    workbench.openTab(tab);
+    workbench.setSplit(tab);
   };
   const closeSplitView = () => useWorkbenchStore.getState().setSplit(null);
 
@@ -454,7 +473,7 @@ function SessionMenuContent({ variant, sessionId, workspaceId, isPinned, isArchi
   );
 }
 
-function SessionActions({ className, sessionId, workspaceId, isPinned, isArchived }: SessionActionsProps) {
+function SessionActions({ className, sessionId, workspaceId, sessionTitle, workspaceTitle, isPinned, isArchived }: SessionActionsProps) {
   if (!useCanManageSession()) return null;
 
   return (
@@ -471,6 +490,8 @@ function SessionActions({ className, sessionId, workspaceId, isPinned, isArchive
           variant="dropdown"
           sessionId={sessionId}
           workspaceId={workspaceId}
+          sessionTitle={sessionTitle}
+          workspaceTitle={workspaceTitle}
           isPinned={isPinned}
           isArchived={isArchived}
         />
@@ -545,11 +566,21 @@ type SessionContextMenuProps = {
   children: React.ReactElement;
   sessionId: string;
   workspaceId: string;
+  sessionTitle?: string;
+  workspaceTitle?: string;
   isPinned: boolean;
   isArchived: boolean;
 };
 
-function SessionContextMenu({ children, sessionId, workspaceId, isPinned, isArchived }: SessionContextMenuProps) {
+function SessionContextMenu({
+  children,
+  sessionId,
+  workspaceId,
+  sessionTitle,
+  workspaceTitle,
+  isPinned,
+  isArchived,
+}: SessionContextMenuProps) {
   if (!useCanManageSession()) return children;
 
   return (
@@ -560,6 +591,8 @@ function SessionContextMenu({ children, sessionId, workspaceId, isPinned, isArch
           variant="context"
           sessionId={sessionId}
           workspaceId={workspaceId}
+          sessionTitle={sessionTitle}
+          workspaceTitle={workspaceTitle}
           isPinned={isPinned}
           isArchived={isArchived}
         />
@@ -757,32 +790,32 @@ type SidebarSplitPillProps = {
  * single unit at the top of the vertical tab list (the sidebar). Clicking a
  * segment focuses its pane; closing a segment dissolves the split.
  */
-function SidebarSplitPill({ workspaceSessionGroups, selectedWorkspaceId, selectedSessionId, onOpenSession }: SidebarSplitPillProps) {
-  const workbenchWorkspaceId = useWorkbenchStore((state) => state.workspaceId);
-  const splitSessionId = useWorkbenchStore((state) => state.splitSessionId);
+function SidebarSplitPill({ workspaceSessionGroups, onOpenSession }: SidebarSplitPillProps) {
+  const primary = useWorkbenchStore((state) => state.primary);
+  const secondary = useWorkbenchStore((state) => state.secondary);
   const focusedPane = useWorkbenchStore((state) => state.focusedPane);
 
-  if (
-    !splitSessionId
-    || !selectedSessionId
-    || workbenchWorkspaceId !== selectedWorkspaceId
-    || splitSessionId === selectedSessionId
-  ) {
+  if (!primary || !secondary) {
     return null;
   }
 
-  const titleFor = (sessionId: string) => {
-    for (const group of workspaceSessionGroups) {
-      const match = group.sessions.find((session) => session.id === sessionId);
-      if (match) return getDisplaySessionTitle(match.title);
-    }
-    return t("session.default_title");
+  const detailsFor = (workspaceId: string, sessionId: string) => {
+    const group = workspaceSessionGroups.find((candidate) => candidate.workspace.id === workspaceId);
+    const match = group?.sessions.find((session) => session.id === sessionId);
+    return {
+      title: match ? getDisplaySessionTitle(match.title) : t("session.default_title"),
+      workspaceTitle: group?.workspace.displayName?.trim()
+        || group?.workspace.name?.trim()
+        || group?.workspace.path?.trim()
+        || workspaceId,
+    };
   };
 
   const segments = [
-    { sessionId: selectedSessionId, pane: "primary" as const },
-    { sessionId: splitSessionId, pane: "secondary" as const },
+    { session: primary, pane: "primary" as const },
+    { session: secondary, pane: "secondary" as const },
   ];
+  const crossWorkspace = primary.workspaceId !== secondary.workspaceId;
 
   return (
     <div className="px-2 pb-1">
@@ -794,13 +827,14 @@ function SidebarSplitPill({ workspaceSessionGroups, selectedWorkspaceId, selecte
         data-session-tab-split-pill
         className="flex items-stretch divide-x divide-sidebar-border overflow-hidden rounded-[11px] border border-sidebar-border"
       >
-        {segments.map(({ sessionId, pane }) => {
-          const title = titleFor(sessionId);
+        {segments.map(({ session, pane }) => {
+          const details = detailsFor(session.workspaceId, session.sessionId);
           const focused = focusedPane === pane;
           return (
             <div
               key={pane}
-              data-session-tab-id={sessionId}
+              data-session-tab-id={session.sessionId}
+              data-session-tab-workspace-id={session.workspaceId}
               className={cn(
                 "flex min-w-0 flex-1 items-center gap-1 px-2 py-1.5 text-xs transition-colors",
                 focused
@@ -811,10 +845,13 @@ function SidebarSplitPill({ workspaceSessionGroups, selectedWorkspaceId, selecte
               <button
                 type="button"
                 className="min-w-0 flex-1 ow-fade-truncate text-left"
-                title={title}
+                title={crossWorkspace ? `${details.title} — ${details.workspaceTitle}` : details.title}
                 onClick={() => useWorkbenchStore.getState().focusPane(pane)}
               >
-                {title}
+                <span className="block truncate">{details.title}</span>
+                {crossWorkspace ? (
+                  <span className="block truncate text-[10px] text-muted-foreground">{details.workspaceTitle}</span>
+                ) : null}
               </button>
               <button
                 type="button"
@@ -825,7 +862,8 @@ function SidebarSplitPill({ workspaceSessionGroups, selectedWorkspaceId, selecte
                   if (pane === "primary") {
                     // Closing the primary segment promotes the split session
                     // to primary, which dissolves the split.
-                    onOpenSession(selectedWorkspaceId, splitSessionId);
+                    useWorkbenchStore.getState().setSplit(null);
+                    onOpenSession(secondary.workspaceId, secondary.sessionId);
                   } else {
                     useWorkbenchStore.getState().setSplit(null);
                   }
@@ -2288,7 +2326,14 @@ function SessionMenuItem({
       data-sidebar-session-id={session.id}
       data-sidebar-session-workspace-id={workspaceId}
     >
-      <SessionContextMenu sessionId={session.id} workspaceId={workspaceId} isPinned={isPinned} isArchived={isArchived}>
+      <SessionContextMenu
+        sessionId={session.id}
+        workspaceId={workspaceId}
+        sessionTitle={displayTitle}
+        workspaceTitle={workspaceName}
+        isPinned={isPinned}
+        isArchived={isArchived}
+      >
         <SidebarMenuSubButton
           isActive={isSelected}
           data-session-tab-id={session.id}

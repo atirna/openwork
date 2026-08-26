@@ -91,7 +91,11 @@ import {
 } from "@/react-app/shell/route-workspaces";
 import { useLocal } from "@/react-app/kernel/local-provider";
 import { usePlatform } from "@/react-app/kernel/platform";
-import { SessionPage, type OpenSessionTab } from "@/react-app/domains/session/chat/session-page";
+import {
+  SessionPage,
+  type OpenSessionTab,
+  type SessionPagePaneRuntime,
+} from "@/react-app/domains/session/chat/session-page";
 import { AutomationsPage } from "@/react-app/domains/automations/automations-page";
 import { DashboardPage } from "@/react-app/domains/dashboard/dashboard-page";
 import { useDashboardDeploymentAvailability } from "@/react-app/domains/dashboard/dashboard-availability";
@@ -118,6 +122,7 @@ import { useSessionFindStore } from "@/react-app/domains/session/surface/find-st
 import { useModelPicker } from "@/react-app/domains/session/modals/use-model-picker";
 import { getSessionModelSelection, useSessionModelStore } from "@/react-app/domains/session/surface/session-model-store";
 import { useWorkbenchStore } from "@/react-app/domains/session/chat/workbench-store";
+import { resolveWorkbenchPaneEndpoint } from "@/react-app/domains/session/chat/pane-runtime";
 import {
   nextFavoriteModel,
   useModelCollectionsStore,
@@ -151,7 +156,10 @@ import {
 import { useMcpConnectedCount } from "@/react-app/domains/connections/use-mcp-connected-count";
 import { useSessionMcpMaintenance } from "@/react-app/domains/connections/use-session-mcp-maintenance";
 import { useCloudMcpSubmitReadiness } from "@/react-app/domains/connections/use-cloud-mcp-submit-readiness";
-import type { CloudMcpSubmissionResult } from "@/react-app/domains/connections/cloud-mcp-submit-readiness";
+import {
+  IDLE_CLOUD_MCP_SUBMISSION_GATE_STATE,
+  type CloudMcpSubmissionResult,
+} from "@/react-app/domains/connections/cloud-mcp-submit-readiness";
 import { useRemoteAccessRestart } from "@/react-app/domains/workspace/remote-access-restart";
 import { RenameWorkspaceModal } from "@/react-app/domains/workspace/rename-workspace-modal";
 import { useRemoteWorkspaceConnectionEditor } from "@/react-app/domains/workspace/use-remote-workspace-connection-editor";
@@ -1655,6 +1663,263 @@ export function SessionRoute() {
     submitWithCloudMcpReadiness,
     token,
   ]);
+  const resolvePaneRuntime = useCallback((session: OpenSessionTab): SessionPagePaneRuntime => {
+    const candidateWorkspace = workspaces.find((candidate) => candidate.id === session.workspaceId);
+    const workspaceTitle = session.workspaceTitle?.trim()
+      || (candidateWorkspace ? workspaceLabel(candidateWorkspace) : session.workspaceId);
+    const connection = candidateWorkspace ? workspaceConnectionStateById[candidateWorkspace.id] : undefined;
+    const workspaceError = candidateWorkspace ? errorsByWorkspaceId[candidateWorkspace.id]?.trim() : undefined;
+    const paneEndpoint = resolveWorkbenchPaneEndpoint({
+      workspaceId: session.workspaceId,
+      workspaceTitle,
+      workspace: candidateWorkspace,
+      endpoint: endpointForWorkspace(candidateWorkspace),
+      connectionError: connection?.status === "error" ? connection.message : workspaceError,
+    });
+    if (paneEndpoint.status === "unavailable") return paneEndpoint;
+    const { endpoint, workspace } = paneEndpoint;
+
+    if (paneEndpoint.workspaceId === selectedWorkspaceId && surfaceProps) {
+      return {
+        status: "ready",
+        workspaceId: paneEndpoint.workspaceId,
+        workspaceTitle: paneEndpoint.workspaceTitle,
+        workspaceRoot: selectedWorkspaceRoot,
+        workspaceType: paneEndpoint.workspaceType,
+        runtimeWorkspaceId: endpoint.workspaceId,
+        opencodeBaseUrl: endpoint.opencodeBaseUrl,
+        openworkToken: endpoint.token,
+        client: endpoint.client,
+        environmentClient: client,
+        surface: surfaceProps,
+      };
+    }
+
+    if (!surfaceProps) {
+      return {
+        status: "unavailable",
+        workspaceId: paneEndpoint.workspaceId,
+        workspaceTitle: paneEndpoint.workspaceTitle,
+        message: "The session runtime is still preparing.",
+      };
+    }
+
+    const workspaceRoot = paneEndpoint.workspaceRoot;
+    const workspaceOpencodeClient = createClient(
+      endpoint.opencodeBaseUrl,
+      workspaceRoot || undefined,
+      { token: endpoint.token, mode: "openwork" },
+    );
+    const scopedSurface = {
+      ...surfaceProps,
+      workspaceRoot,
+      modelUnavailable: false,
+      modelUnavailableMessage: null,
+      resolveModelAvailability: undefined,
+      cloudMcpSubmissionState: IDLE_CLOUD_MCP_SUBMISSION_GATE_STATE,
+      onOpenSettingsSection: (section: ComposerSettingsSection) => {
+        openComposerConfigure(section, {
+          openLibrary: (path) => handleOpenExtensions(path, workspace.id),
+          openSettings: (path) => handleOpenSettings(path, workspace.id),
+        });
+      },
+      onOpenConnect: () => handleOpenExtensions("", workspace.id),
+      listCommands: async (): Promise<SlashCommandOption[]> => {
+        void engineReloadVersion;
+        return listCommands(workspaceOpencodeClient, workspaceRoot || undefined);
+      },
+      listAgents: async () => {
+        void engineReloadVersion;
+        return unwrap(await workspaceOpencodeClient.app.agents()).filter(isLibraryAgent);
+      },
+      searchFiles: async (query: string) => {
+        const trimmed = query.trim();
+        if (!trimmed) return [];
+        return unwrap(await workspaceOpencodeClient.find.files({
+          query: trimmed,
+          dirs: "true",
+          limit: 50,
+          directory: workspaceRoot || undefined,
+        }));
+      },
+      isRemoteWorkspace: workspace.workspaceType === "remote",
+      isSandboxWorkspace: isSandboxWorkspace(workspace),
+      environmentRuntimeKey: workspace.workspaceType === "remote" ? null : environmentRuntimeKey,
+      onApplyEnvironmentChanges: undefined,
+      onSendDraft: async (draft: ComposerDraft, sessionId: string): Promise<CloudMcpSubmissionResult> => {
+        const targetSessionId = sessionId.trim() || session.sessionId;
+        const text = (draft.resolvedText ?? draft.text).trim();
+        if (!targetSessionId || (!text && draft.attachments.length === 0)) {
+          return { outcome: "cancelled", reason: "context_changed" };
+        }
+        const sessionModelSelection = getSessionModelSelection(targetSessionId);
+        const sendModel = sessionModelSelection?.model ?? local.prefs.defaultModel;
+        const sendVariant = sessionModelSelection ? sessionModelSelection.variant : modelVariantValue;
+        return submitWithCloudMcpReadiness({
+          skipGate: true,
+          send: async () => {
+            await sendWithRevertRollback({
+              revertMessageId: draft.revertMessageId,
+              abort: () => abortSessionSafe(workspaceOpencodeClient, targetSessionId, workspaceRoot || undefined, {
+                source: "session.edit_resend.before_revert",
+                initiator: "user",
+                reason: "abort active run before replacing a reverted message",
+              }),
+              revert: async (messageId) => {
+                const reverted = await revertSession(workspaceOpencodeClient, targetSessionId, messageId);
+                applySessionRevert(endpoint.workspaceId, reverted);
+              },
+              prompt: async () => {
+                captureAnalyticsEvent("task_message_sent", {
+                  mode: draft.mode ?? "prompt",
+                  is_command: Boolean(draft.command),
+                  attachment_count: draft.attachments.length,
+                  text_length: text.length,
+                  workspace_type: workspace.workspaceType ?? "unknown",
+                  provider_id: sendModel?.providerID ?? null,
+                  model_id: sendModel?.modelID ?? null,
+                });
+                markTaskRunStart(targetSessionId);
+                const projectDimension = readWorkspaceProjectDimension(workspace.id);
+                const modelSelection = sessionModelSelection ? "manual" : "default";
+                const telemetryDimensions = [
+                  ...(projectDimension ? [{ type: "project", label: projectDimension.label }] : []),
+                  ...(sendModel ? [{
+                    type: "model",
+                    value: `${sendModel.providerID}/${sendModel.modelID}`,
+                    label: `${sendModel.providerID}/${sendModel.modelID}`,
+                  }] : []),
+                  { type: "model_selection", value: modelSelection, label: modelSelection },
+                ];
+                trackSessionActive(targetSessionId, telemetryDimensions);
+                trackTaskStarted(targetSessionId, telemetryDimensions);
+                if (draft.mode === "shell") {
+                  await shellInSession(workspaceOpencodeClient, targetSessionId, text);
+                  return;
+                }
+                if (draft.command) {
+                  const result = await workspaceOpencodeClient.session.command({
+                    sessionID: targetSessionId,
+                    command: draft.command.name,
+                    arguments: draft.command.arguments,
+                  });
+                  if (result.error) throw new Error(serializeSDKError(result.error));
+                  return;
+                }
+                const parts = await draftToParts(draft, workspaceRoot, targetSessionId, endpoint);
+                const envSystemContext = await buildOpenworkEnvSystemContext(endpoint.client, {
+                  cacheKey: targetSessionId,
+                  runtimeKey: workspace.workspaceType === "remote" ? null : environmentRuntimeKey,
+                });
+                const result = await workspaceOpencodeClient.session.promptAsync({
+                  sessionID: targetSessionId,
+                  parts,
+                  model: sendModel ?? undefined,
+                  agent: selectedAgent ?? undefined,
+                  ...(sendVariant ? { variant: sendVariant } : {}),
+                  ...(envSystemContext ? { system: envSystemContext } : {}),
+                });
+                if (result.error) throw new Error(serializeSDKError(result.error));
+                if (sendModel) {
+                  useSessionModelStore.getState().setModel(targetSessionId, sendModel, sendVariant ?? null);
+                }
+              },
+              unrevert: async () => {
+                try {
+                  await unrevertSession(workspaceOpencodeClient, targetSessionId);
+                } finally {
+                  applySessionUnrevert(endpoint.workspaceId, targetSessionId);
+                }
+              },
+              onUnrevertError: (error) => console.warn("[edit-resend] rollback failed", error),
+            });
+          },
+        });
+      },
+      onRevertToMessage: async (messageId: string, sessionId: string) => {
+        const targetSessionId = sessionId.trim() || session.sessionId;
+        try {
+          await abortSessionSafe(workspaceOpencodeClient, targetSessionId, workspaceRoot || undefined, {
+            source: "session.revert_to_message.before_revert",
+            initiator: "user",
+            reason: "abort active run before reverting transcript",
+          });
+          const reverted = await revertSession(workspaceOpencodeClient, targetSessionId, messageId);
+          applySessionRevert(endpoint.workspaceId, reverted);
+          return true;
+        } catch (error) {
+          console.warn("[revert] failed", error);
+          toast.error(t("session.revert_failed"));
+          return false;
+        }
+      },
+      onRestoreRevertedSession: async (sessionId: string) => {
+        const targetSessionId = sessionId.trim() || session.sessionId;
+        try {
+          await unrevertSession(workspaceOpencodeClient, targetSessionId);
+          applySessionUnrevert(endpoint.workspaceId, targetSessionId);
+          return true;
+        } catch (error) {
+          console.warn("[unrevert] failed", error);
+          toast.error(t("session.restore_failed"));
+          return false;
+        }
+      },
+      onForkAtMessage: (messageId: string | null, sessionId: string) => {
+        void (async () => {
+          const targetSessionId = sessionId.trim() || session.sessionId;
+          try {
+            const forked = await forkSession(workspaceOpencodeClient, targetSessionId, messageId ?? undefined);
+            writeLastSessionFor(workspace.id, forked.id);
+            rememberPendingCreatedSession(workspace.id, forked.id);
+            setSessionsByWorkspaceId((current) => ({
+              ...current,
+              [workspace.id]: [forked, ...(current[workspace.id] ?? [])],
+            }));
+            navigateToWorkspaceSession(workspace.id, forked.id);
+            void refreshRouteState();
+          } catch (error) {
+            console.warn("[fork] failed", error);
+            toast.error(t("session.branch_failed"));
+          }
+        })();
+      },
+    };
+    return {
+      status: "ready",
+      workspaceId: paneEndpoint.workspaceId,
+      workspaceTitle: paneEndpoint.workspaceTitle,
+      workspaceRoot,
+      workspaceType: paneEndpoint.workspaceType,
+      runtimeWorkspaceId: endpoint.workspaceId,
+      opencodeBaseUrl: endpoint.opencodeBaseUrl,
+      openworkToken: endpoint.token,
+      client: endpoint.client,
+      environmentClient: client,
+      surface: scopedSurface,
+    };
+  }, [
+    client,
+    endpointForWorkspace,
+    engineReloadVersion,
+    environmentRuntimeKey,
+    errorsByWorkspaceId,
+    handleOpenExtensions,
+    handleOpenSettings,
+    local.prefs.defaultModel,
+    modelVariantValue,
+    navigateToWorkspaceSession,
+    refreshRouteState,
+    rememberPendingCreatedSession,
+    selectedAgent,
+    selectedWorkspaceId,
+    selectedWorkspaceRoot,
+    setSessionsByWorkspaceId,
+    submitWithCloudMcpReadiness,
+    surfaceProps,
+    workspaceConnectionStateById,
+    workspaces,
+  ]);
   const cloudWorkspaceMainContentDecision = mapCloudWorkspaceMainContentDecision({
     status: cloudWorkspace.viewModel.variant,
     hasWorkspaces: Boolean(surfaceProps),
@@ -2015,8 +2280,8 @@ export function SessionRoute() {
 
   const cycleThinkingMode = useCallback((direction: ThinkingModeShortcutDirection = "forward") => {
     const workbench = useWorkbenchStore.getState();
-    const activeSessionId = workbench.focusedPane === "secondary" && workbench.splitSessionId
-      ? workbench.splitSessionId
+    const activeSessionId = workbench.focusedPane === "secondary" && workbench.secondary
+      ? workbench.secondary.sessionId
       : selectedSessionId;
     const selection = activeSessionId ? getSessionModelSelection(activeSessionId) : null;
     const summary = selection
@@ -2057,8 +2322,8 @@ export function SessionRoute() {
 
   const cycleFavoriteModel = useCallback(() => {
     const workbench = useWorkbenchStore.getState();
-    const activeSessionId = workbench.focusedPane === "secondary" && workbench.splitSessionId
-      ? workbench.splitSessionId
+    const activeSessionId = workbench.focusedPane === "secondary" && workbench.secondary
+      ? workbench.secondary.sessionId
       : selectedSessionId;
     const selection = activeSessionId ? getSessionModelSelection(activeSessionId) : null;
     const currentModel = selection?.model ?? local.prefs.defaultModel ?? null;
@@ -3047,6 +3312,7 @@ export function SessionRoute() {
         onReorderWorkspaces: handleReorderWorkspaces,
       }}
       surface={surfaceProps}
+      resolvePaneRuntime={resolvePaneRuntime}
       history={{
         canUndo: false,
         canRedo: false,
@@ -3194,6 +3460,21 @@ export function SessionRoute() {
         }
       }}
       onOpenSession={(workspaceId, sessionId) => navigateToWorkspaceSession(workspaceId, sessionId)}
+      currentSession={selectedSessionId ? { workspaceId: selectedWorkspaceId, sessionId: selectedSessionId } : null}
+      onOpenSessionInSplit={(workspaceId, sessionId) => {
+        const option = paletteSessionOptions.find((candidate) => (
+          candidate.workspaceId === workspaceId && candidate.sessionId === sessionId
+        ));
+        const tab = {
+          workspaceId,
+          sessionId,
+          title: option?.title,
+          workspaceTitle: option?.workspaceTitle ?? workspaceId,
+        };
+        const workbench = useWorkbenchStore.getState();
+        workbench.openTab(tab);
+        workbench.setSplit(tab);
+      }}
       onOpenSettings={(route) => handleOpenSettings(route ?? "/settings/general")}
       onOpenExtensions={() => handleOpenExtensions()}
       modelOptions={modelPicker.options}

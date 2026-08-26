@@ -40,11 +40,14 @@ export const openworkConversationLayoutSchema = z.discriminatedUnion("kind", [
   z.object({
     kind: z.literal("single"),
     sessionId: z.string(),
+    workspaceId: z.string().optional(),
   }),
   z.object({
     kind: z.literal("split"),
     primarySessionId: z.string(),
+    primaryWorkspaceId: z.string().optional(),
     secondarySessionId: z.string(),
+    secondaryWorkspaceId: z.string().optional(),
     focused: z.enum(["primary", "secondary"]),
   }),
 ])
