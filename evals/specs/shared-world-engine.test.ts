@@ -11,14 +11,20 @@ const WORLDS_DIRECTORY = join(REPO_ROOT, "worlds");
 test("shared world files are discovered, path-loadable, consent-gated, and detached by default", async ({ evidence }) => {
   const discovered = await discoverWorlds(WORLDS_DIRECTORY);
   assert.deepEqual(discovered.map((world) => world.name), [
+    "azure-byok",
     "desktop-prod-live",
     "dev-headless",
     "headless-prod-live",
   ]);
 
+  const azureByok = await loadWorldFile(join(WORLDS_DIRECTORY, "azure-byok.ts"));
   const devHeadless = await loadWorldFile(join(WORLDS_DIRECTORY, "dev-headless.ts"));
   const headlessProduction = await loadWorldFile(join(WORLDS_DIRECTORY, "headless-prod-live.ts"));
   const desktopProduction = await loadWorldFile(join(WORLDS_DIRECTORY, "desktop-prod-live.ts"));
+  assert.equal(azureByok.defaultName, "azure-byok");
+  assert.equal(azureByok.definition.adapter, "eval");
+  assert.equal(azureByok.definition.detached, true);
+  assert.equal(azureByok.definition.requiresSharedState, false);
   assert.equal(devHeadless.defaultName, "dev-headless");
   assert.equal(devHeadless.definition.detached, true);
   assert.deepEqual(devHeadless.definition.topology, {
@@ -79,7 +85,7 @@ test("shared world files are discovered, path-loadable, consent-gated, and detac
 
   evidence.recordAssertionEvidence(
     "Root world files are auto-discovered and path-loadable",
-    "Discovery returned all three approved files, and loading retained each adapter/topology contract.",
+    "Discovery returned all four approved files, and loading retained each adapter/topology contract.",
     true,
   );
   evidence.recordAssertionEvidence(
