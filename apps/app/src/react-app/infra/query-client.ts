@@ -11,7 +11,6 @@ export function getReactQueryClient(): QueryClient {
 
   for (const queryKey of [
     ["react-session-transcript"],
-    ["react-session-status"],
     ["react-session-todos"],
   ] as const) {
     queryClient.setQueryDefaults(queryKey, { gcTime: 15_000 });
@@ -24,7 +23,14 @@ export function getReactQueryClient(): QueryClient {
   // stayed "running" forever (#1916). They are cleared explicitly by
   // permission.replied / question.answered events and clearTrackedSession,
   // never by GC.
+  //
+  // Run status is in the same class: while the session route is unmounted
+  // (e.g. a Settings visit) the SSE sync keeps writing the tiny busy/idle
+  // entry with zero observers, so GC deleted the busy flag and a still-live
+  // run rendered as idle on return. Status entries are cleared by
+  // clearTrackedSession, never by GC.
   for (const queryKey of [
+    ["react-session-status"],
     ["react-session-permissions"],
     ["react-session-questions"],
   ] as const) {

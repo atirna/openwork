@@ -146,4 +146,61 @@ describe("session error resilience", () => {
     expect(html).not.toContain('aria-label="Show error details"')
     expect(html).not.toContain('data-testid="session-error-details-trigger"')
   })
+
+  const renderErrorTranscriptWithResume = (error: unknown) => {
+    const message = createSessionErrorUIMessage(
+      "assistant-turn",
+      presentOpencodeSessionError(error),
+    )
+    return renderToStaticMarkup(
+      <MessageListProvider
+        workspaceId="workspace-1"
+        sessionId="session-1"
+        showThinking={false}
+        developerMode={false}
+        displaySuggestions={false}
+        providerConnectedCount={1}
+        dispatchAction={() => undefined}
+        setPrompt={() => undefined}
+        onRevertToUserMessage={() => undefined}
+        onForkAtMessage={() => undefined}
+        onEditUserMessage={() => undefined}
+        onResumeInterrupted={() => undefined}
+        onMcpReconnect={async () => "connected"}
+        onMcpReopenAuthorization={async () => undefined}
+        onMcpRetry={() => undefined}
+      >
+        <MessageList messages={[message]} status="ready" />
+      </MessageListProvider>,
+    )
+  }
+
+  test("offers Resume on the error card for an engine abort", () => {
+    const html = renderErrorTranscriptWithResume({
+      name: "MessageAbortedError",
+      data: { message: "Aborted" },
+    })
+
+    expect(html).toContain('data-testid="session-error-resume"')
+    expect(html).toContain("Resume")
+  })
+
+  test("offers Resume on the error card for a provider timeout", () => {
+    const html = renderErrorTranscriptWithResume({
+      name: "ProviderHeaderTimeoutError",
+      data: { message: "Provider response headers timed out after 10000ms" },
+    })
+
+    expect(html).toContain('data-testid="session-error-resume"')
+  })
+
+  test("hides Resume for errors that cannot be resumed", () => {
+    const html = renderErrorTranscriptWithResume({
+      name: "ProviderAuthError",
+      data: { message: "Provider authentication failed" },
+    })
+
+    expect(html).not.toContain('data-testid="session-error-resume"')
+    expect(html).not.toContain(">Resume<")
+  })
 })

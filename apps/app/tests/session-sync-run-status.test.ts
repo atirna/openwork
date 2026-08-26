@@ -232,6 +232,46 @@ describe("session run status ordering", () => {
 });
 
 describe("session run status reconnect reconciliation", () => {
+  test("seeds a missed busy edge into the status cache on connect", async () => {
+    __setWorkspaceSessionSyncSubscriptionFactoryForTest(createSubscription);
+    __setWorkspaceSessionSyncStatusFetcherForTest(async () => ({ [sessionId]: { type: "busy" } }));
+    setSystemTime(100);
+    const input = createSyncInput();
+    ensureWorkspaceSessionSync(input);
+    const releaseSession = trackWorkspaceSessionSync(input, sessionId);
+    await waitForSubscriptions(1);
+    await flushMicrotasks();
+
+    expect(useSessionActivityStore.getState().recordsByWorkspaceId[workspaceId]?.[sessionId]?.status).toBe("thinking");
+    expect(getReactQueryClient().getQueryData(statusKey(workspaceId, sessionId))).toEqual({ type: "busy" });
+
+    releaseSession();
+  });
+
+  test("does not clobber a newer live status with a stale reconnect fetch", async () => {
+    __setWorkspaceSessionSyncSubscriptionFactoryForTest(createSubscription);
+    let resolveStatuses: (statuses: Record<string, SessionStatus>) => void = () => {};
+    __setWorkspaceSessionSyncStatusFetcherForTest(() => new Promise((resolve) => {
+      resolveStatuses = resolve;
+    }));
+    setSystemTime(100);
+    const input = createSyncInput();
+    ensureWorkspaceSessionSync(input);
+    const releaseSession = trackWorkspaceSessionSync(input, sessionId);
+    await waitForSubscriptions(1);
+    await flushMicrotasks();
+
+    setSystemTime(200);
+    applyStatus(input, { type: "busy" });
+    resolveStatuses({});
+    await flushMicrotasks();
+
+    expect(useSessionActivityStore.getState().recordsByWorkspaceId[workspaceId]?.[sessionId]?.runActive).toBe(true);
+    expect(getReactQueryClient().getQueryData(statusKey(workspaceId, sessionId))).toEqual({ type: "busy" });
+
+    releaseSession();
+  });
+
   test("heals an active record when a reconnect reports no active run", async () => {
     __setWorkspaceSessionSyncSubscriptionFactoryForTest(createSubscription);
     __setWorkspaceSessionSyncStatusFetcherForTest(async () => ({}));

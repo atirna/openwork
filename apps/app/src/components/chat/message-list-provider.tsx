@@ -25,6 +25,8 @@ interface MessageListContextValue {
   onEditUserMessage: (messageId: string, text: string) => void
   /** Open a sub-agent (child) session in the main chat surface. */
   onOpenSubagentSession?: (sessionId: string) => void
+  /** Re-submit an interrupted run by sending its recovery prompt. */
+  onResumeInterrupted?: (recoveryPrompt: string) => void
   onMcpReconnect: (
     action: ChatToolReconnectAction,
     onProgress: (progress: ChatToolReconnectProgress) => void,
@@ -46,6 +48,7 @@ interface MessageListProviderProps {
   onForkAtMessage: (messageId: string) => void
   onEditUserMessage: (messageId: string, text: string) => void
   onOpenSubagentSession?: (sessionId: string) => void
+  onResumeInterrupted?: (recoveryPrompt: string) => void
   onMcpReconnect: (
     action: ChatToolReconnectAction,
     onProgress: (progress: ChatToolReconnectProgress) => void,
@@ -81,6 +84,7 @@ export function MessageListProvider({
   onForkAtMessage,
   onEditUserMessage,
   onOpenSubagentSession,
+  onResumeInterrupted,
   onMcpReconnect,
   onMcpReopenAuthorization,
   onMcpRetry,
@@ -92,6 +96,7 @@ export function MessageListProvider({
     onForkAtMessage,
     onEditUserMessage,
     onOpenSubagentSession,
+    onResumeInterrupted,
     onMcpReconnect,
     onMcpReopenAuthorization,
     onMcpRetry,
@@ -104,6 +109,7 @@ export function MessageListProvider({
       onForkAtMessage,
       onEditUserMessage,
       onOpenSubagentSession,
+      onResumeInterrupted,
       onMcpReconnect,
       onMcpReopenAuthorization,
       onMcpRetry,
@@ -115,6 +121,7 @@ export function MessageListProvider({
     onForkAtMessage,
     onEditUserMessage,
     onOpenSubagentSession,
+    onResumeInterrupted,
     onMcpReconnect,
     onMcpReopenAuthorization,
     onMcpRetry,
@@ -126,6 +133,7 @@ export function MessageListProvider({
     onForkAtMessage: (messageId: string) => handlersRef.current.onForkAtMessage(messageId),
     onEditUserMessage: (messageId: string, text: string) => handlersRef.current.onEditUserMessage(messageId, text),
     onOpenSubagentSession: (sessionId: string) => handlersRef.current.onOpenSubagentSession?.(sessionId),
+    onResumeInterrupted: (recoveryPrompt: string) => handlersRef.current.onResumeInterrupted?.(recoveryPrompt),
     onMcpReconnect: (
       action: ChatToolReconnectAction,
       onProgress: (progress: ChatToolReconnectProgress) => void,
@@ -136,6 +144,7 @@ export function MessageListProvider({
     onMcpRetry: (action: ChatToolReconnectAction) => handlersRef.current.onMcpRetry(action),
   }), [])
   const canOpenSubagentSession = Boolean(onOpenSubagentSession)
+  const canResumeInterrupted = Boolean(onResumeInterrupted)
   const value = React.useMemo(
     () => ({
       workspaceId,
@@ -150,6 +159,9 @@ export function MessageListProvider({
       onOpenSubagentSession: canOpenSubagentSession
         ? stableHandlers.onOpenSubagentSession
         : undefined,
+      onResumeInterrupted: canResumeInterrupted
+        ? stableHandlers.onResumeInterrupted
+        : undefined,
     }),
     [
       workspaceId,
@@ -162,6 +174,7 @@ export function MessageListProvider({
       connectorIdentities,
       stableHandlers,
       canOpenSubagentSession,
+      canResumeInterrupted,
     ],
   )
 

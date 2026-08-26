@@ -2031,6 +2031,22 @@ export function SessionSurface(props: SessionSurfaceProps) {
     void typeComposerText(prompt);
   }, [typeComposerText]);
 
+  // Explicit user click on the interrupted-run error card. Re-submits the
+  // classified recovery prompt through the normal send path so the agent
+  // continues the interrupted task in this session instead of restarting it.
+  const handleResumeInterrupted = useCallback(async (recoveryPrompt: string) => {
+    try {
+      await sendDraft({
+        mode: "prompt",
+        parts: [{ type: "text", text: recoveryPrompt }],
+        attachments: [],
+        text: recoveryPrompt,
+      });
+    } catch {
+      // sendDraft already surfaced the failure on the session error state.
+    }
+  }, [sendDraft]);
+
   useEffect(() => {
     const resetReconnectState = () => {
       useChatMcpReconnectStore.getState().reset();
@@ -2368,6 +2384,7 @@ export function SessionSurface(props: SessionSurfaceProps) {
                       onForkAtMessage={handleForkAtMessage}
                       onEditUserMessage={handleEditUserMessage}
                       onOpenSubagentSession={props.onOpenSubagentSession}
+                      onResumeInterrupted={handleResumeInterrupted}
                       onMcpReconnect={handleMcpReconnect}
                       onMcpReopenAuthorization={handleMcpReopenAuthorization}
                       onMcpRetry={handleMcpRetry}

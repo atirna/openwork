@@ -27,6 +27,8 @@ import type { SessionStatus } from "@opencode-ai/sdk/v2/client"
 import { openDesktopUrl, revealDesktopItemInDir } from "@/app/lib/desktop"
 import { isElectronRuntime } from "@/app/lib/runtime-env"
 import { SYNTHETIC_SESSION_ERROR_MESSAGE_PREFIX } from "@/app/types"
+import { t } from "@/i18n"
+import { sessionErrorPresentationFromUIMessage } from "@/react-app/domains/session/sync/session-error"
 import { ApplyPatchTool } from "@/components/tools/apply-patch"
 import { BashTool } from "@/components/tools/bash"
 import { EditTool } from "@/components/tools/edit"
@@ -801,7 +803,13 @@ type MessageComponentProps = {
 const MessageComponent = React.memo(
   ({ message, isLastMessage, isStreaming, isLastStep, hideReasoning }: MessageComponentProps) => {
     if (isSessionErrorMessage(message)) {
-      return <ErrorMessage error={getMessagesText([message]) || "Session failed"} />
+      const presentation = sessionErrorPresentationFromUIMessage(message)
+      return (
+        <ErrorMessage
+          error={getMessagesText([message]) || "Session failed"}
+          resumePrompt={presentation?.recoveryPrompt}
+        />
+      )
     }
 
     if (isEmptyMessage(message)) {
@@ -843,15 +851,33 @@ LoadingMessage.displayName = "LoadingMessage"
 
 interface ErrorMessageProps {
   error: string | null
+  /** Set only for interrupted runs (aborted / provider timeout) that can resume. */
+  resumePrompt?: string | null
 }
 
-function ErrorMessage({ error }: ErrorMessageProps) {
+function ErrorMessage({ error, resumePrompt }: ErrorMessageProps) {
+  const { onResumeInterrupted } = useMessageList()
+
   return (
     <Message className="not-prose mx-auto flex w-full max-w-3xl flex-col items-start gap-2 px-0 md:px-10">
       <div className="group flex w-full flex-col items-start gap-0">
-        <div className="text-foreground flex min-w-0 flex-1 flex-row items-start gap-2 rounded-lg border-2 border-red-300 bg-red-300/20 px-2 py-1">
-          <AlertTriangle size={16} className="mt-0.5 shrink-0 text-destructive" />
-          <p className="whitespace-pre-wrap text-destructive">{error}</p>
+        <div className="text-foreground flex min-w-0 flex-1 flex-col gap-2 rounded-lg border-2 border-red-300 bg-red-300/20 px-2 py-1">
+          <div className="flex flex-row items-start gap-2">
+            <AlertTriangle size={16} className="mt-0.5 shrink-0 text-destructive" />
+            <p className="whitespace-pre-wrap text-destructive">{error}</p>
+          </div>
+          {resumePrompt && onResumeInterrupted ? (
+            <Button
+              type="button"
+              variant="outline"
+              size="sm"
+              className="mb-1 ml-6 h-7 w-fit border-red-400/70 bg-red-50 text-xs text-red-950 hover:bg-red-100"
+              data-testid="session-error-resume"
+              onClick={() => onResumeInterrupted(resumePrompt)}
+            >
+              {t("session.resume_interrupted")}
+            </Button>
+          ) : null}
         </div>
       </div>
     </Message>

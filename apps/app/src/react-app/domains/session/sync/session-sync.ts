@@ -256,6 +256,9 @@ function clearTrackedSession(input: SyncOptions, entry: SyncEntry, sessionId: st
   );
   const queryClient = getReactQueryClient();
   queryClient.removeQueries({ queryKey: permissionKey(input.workspaceId, sessionId), exact: true });
+  // Status entries are exempt from TanStack GC (see query-client.ts), so the
+  // tracked-session lifecycle owns their cleanup.
+  queryClient.removeQueries({ queryKey: statusKey(input.workspaceId, sessionId), exact: true });
   if (entry.refs <= 0 && entry.retainedSessionTimers.size === 0) {
     disposeWorkspaceSync(syncKey(input), entry);
   }
@@ -767,11 +770,7 @@ function applyEvent(entry: SyncEntry, workspaceId: string, event: OpencodeEvent)
   if (event.type === "session.status") {
     const props = (event.properties ?? {}) as { sessionID?: string; status?: SessionStatus };
     if (!props.sessionID || !props.status) return;
-    useSessionActivityStore.getState().setRunStatus(workspaceId, props.sessionID, props.status);
-    const tracked = isTrackedSession(entry, props.sessionID);
-    if (tracked) queryClient.setQueryData(statusKey(workspaceId, props.sessionID), props.status);
-    for (const listener of entry.sessionStatusListeners) listener({ sessionId: props.sessionID, status: props.status });
-    if (input && tracked && !isLiveStatus(props.status)) releaseRetainedSessionSoon(input, entry, props.sessionID);
+    applySessionRunStatus(entry, workspaceId, props.sessionID, props.status);
     return;
   }
 
@@ -1199,6 +1198,35 @@ function startSync(input: SyncOptions, entry: SyncEntry) {
   };
 }
 
+/**
+ * Apply a session run status through the same path a live `session.status`
+ * event takes: the activity store, the react-query status cache for tracked
+ * sessions, and the sync listeners. Fetched (level-triggered) statuses pass
+ * `snapshotStartedAt` so they are ordered against live writes — a fetch that
+ * raced a newer SSE status is dropped instead of clobbering it.
+ */
+function applySessionRunStatus(
+  entry: SyncEntry,
+  workspaceId: string,
+  sessionId: string,
+  status: SessionStatus,
+  options: { snapshotStartedAt?: number } = {},
+) {
+  const snapshotStartedAt = options.snapshotStartedAt;
+  const store = useSessionActivityStore.getState();
+  if (typeof snapshotStartedAt === "number") {
+    const record = store.recordsByWorkspaceId[workspaceId]?.[sessionId];
+    if (snapshotStartedAt < (record?.runStatusAt ?? 0)) return;
+    store.seedSessionRun(workspaceId, sessionId, status, undefined, { snapshotStartedAt });
+  } else {
+    store.setRunStatus(workspaceId, sessionId, status);
+  }
+  const tracked = isTrackedSession(entry, sessionId);
+  if (tracked) getReactQueryClient().setQueryData(statusKey(workspaceId, sessionId), status);
+  for (const listener of entry.sessionStatusListeners) listener({ sessionId, status });
+  if (entry.input && tracked && !isLiveStatus(status)) releaseRetainedSessionSoon(entry.input, entry, sessionId);
+}
+
 async function reconcileSessionRunStatuses(entry: SyncEntry, input: SyncOptions, signal: AbortSignal) {
   const startedAt = Date.now();
   let statuses: Record<string, SessionStatus>;
@@ -1209,16 +1237,17 @@ async function reconcileSessionRunStatuses(entry: SyncEntry, input: SyncOptions,
   }
   if (signal.aborted) return;
 
-  const records = useSessionActivityStore.getState().recordsByWorkspaceId[input.workspaceId];
-  if (!records) return;
-  for (const sessionId of Object.keys(records)) {
-    useSessionActivityStore.getState().seedSessionRun(
-      input.workspaceId,
-      sessionId,
-      statuses[sessionId] ?? idleStatus,
-      undefined,
-      { snapshotStartedAt: startedAt },
-    );
+  // Level-triggered convergence on every SSE (re)connect: sessions the fetch
+  // reports live are seeded busy (heals a subscriber that missed the busy
+  // edge), and known records the fetch no longer reports are seeded idle
+  // (heals a missed idle edge). Both flow through the same path a
+  // session.status event uses so the status cache and listeners converge too.
+  const records = useSessionActivityStore.getState().recordsByWorkspaceId[input.workspaceId] ?? {};
+  const sessionIds = new Set([...Object.keys(statuses), ...Object.keys(records)]);
+  for (const sessionId of sessionIds) {
+    applySessionRunStatus(entry, input.workspaceId, sessionId, statuses[sessionId] ?? idleStatus, {
+      snapshotStartedAt: startedAt,
+    });
   }
 }
 
