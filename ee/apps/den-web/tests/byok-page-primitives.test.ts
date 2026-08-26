@@ -33,6 +33,13 @@ describe("Bring your Own Keys page", () => {
     }
   });
 
+  test("editor explains Azure Foundry project URLs for resource names", () => {
+    const editor = readComponent("dashboard", "_components", "llm-provider-editor-screen.tsx");
+    expect(editor).toContain("Azure Foundry may show a project URL");
+    expect(editor).toContain("yourFoundryResourceName");
+    expect(editor).toContain("Paste the resource name or Azure Foundry project URL");
+  });
+
   test("screen is built from shared primitives instead of local markup", () => {
     for (const primitive of ["DenOptionCard", "DenSectionHeader", "DenTable", "DenBrandMark", "DenBadge", "DenNotice"]) {
       expect(screen).toContain(primitive);

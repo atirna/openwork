@@ -30,6 +30,7 @@ import { useOrgDashboard } from "../_providers/org-dashboard-provider";
 import {
     buildGuidedCustomProviderConfig,
     buildGuidedProviderEnvName,
+    normalizeAzureResourceNameInput,
     parseGuidedModelIds,
     readEnvNamesFromCustomProviderText,
     readGuidedCustomProviderFields,
@@ -840,10 +841,28 @@ export function LlmProviderEditorScreen({
                             Add a value for each one — values left blank keep
                             what is already saved.
                         </p>
+                        {credentialEnvNames.includes("AZURE_RESOURCE_NAME") ? (
+                            <div className="rounded-[22px] border border-sky-100 bg-sky-50 px-5 py-4 text-[13px] leading-6 text-sky-900">
+                                <p className="font-semibold">Azure resource name</p>
+                                <p className="mt-1 text-sky-800">
+                                    Azure Foundry may show a project URL such as{" "}
+                                    <code className="rounded bg-white/70 px-1.5 py-0.5 font-mono text-[12px]">
+                                        https://yourFoundryResourceName.services.ai.azure.com/api/projects/your-project
+                                    </code>
+                                    . Paste that full URL here and we will save just the
+                                    resource name, for example{" "}
+                                    <code className="rounded bg-white/70 px-1.5 py-0.5 font-mono text-[12px]">
+                                        yourFoundryResourceName
+                                    </code>
+                                    .
+                                </p>
+                            </div>
+                        ) : null}
                         {credentialEnvNames.map((envName) => {
                             const configured =
                                 provider?.configuredEnvKeys.includes(envName) ??
                                 false;
+                            const isAzureResourceName = envName === "AZURE_RESOURCE_NAME";
                             return (
                                 <label key={envName} className="grid gap-3">
                                     <span className="flex flex-wrap items-center gap-2 text-[14px] font-medium text-gray-700">
@@ -855,20 +874,24 @@ export function LlmProviderEditorScreen({
                                                 Saved
                                             </span>
                                         ) : null}
-                                    </span>
-                                    <DenInput
-                                        type="password"
+                                     </span>
+                                     <DenInput
+                                        type={isAzureResourceName ? "text" : "password"}
                                         value={apiKeyValues[envName] ?? ""}
                                         onChange={(event) =>
                                             setApiKeyValues((current) => ({
                                                 ...current,
-                                                [envName]: event.target.value,
+                                                [envName]: isAzureResourceName
+                                                    ? normalizeAzureResourceNameInput(event.target.value)
+                                                    : event.target.value,
                                             }))
                                         }
                                         placeholder={
                                             configured
                                                 ? "Leave blank to keep current value"
-                                                : `Paste the ${envName} value`
+                                                : isAzureResourceName
+                                                  ? "Paste the resource name or Azure Foundry project URL"
+                                                  : `Paste the ${envName} value`
                                         }
                                     />
                                 </label>
