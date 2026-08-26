@@ -354,6 +354,14 @@ export type DenExternalMcpConnection = {
   nativeProviderKey?: string | null;
 };
 
+export type DenExternalMcpPreset = {
+  presetId: string;
+  displayName: string;
+  description: string;
+  url: string;
+  authType: "oauth" | "apikey" | "none";
+};
+
 export type DenMcpConnectionConnectStart = {
   status: "connected" | "needs_auth";
   authorizeUrl: string | null;
@@ -2079,6 +2087,38 @@ function getDenExternalMcpConnections(payload: unknown): DenExternalMcpConnectio
   });
 }
 
+function parseDenExternalMcpPreset(value: unknown): DenExternalMcpPreset | null {
+  if (
+    !isRecord(value) ||
+    typeof value.presetId !== "string" ||
+    typeof value.displayName !== "string" ||
+    typeof value.description !== "string" ||
+    typeof value.url !== "string" ||
+    (value.authType !== "oauth" && value.authType !== "apikey" && value.authType !== "none")
+  ) {
+    return null;
+  }
+
+  return {
+    presetId: value.presetId,
+    displayName: value.displayName,
+    description: value.description,
+    url: value.url,
+    authType: value.authType,
+  };
+}
+
+function getDenExternalMcpPresets(payload: unknown): DenExternalMcpPreset[] {
+  if (!isRecord(payload) || !Array.isArray(payload.presets)) {
+    return [];
+  }
+
+  return payload.presets.flatMap((preset) => {
+    const parsed = parseDenExternalMcpPreset(preset);
+    return parsed ? [parsed] : [];
+  });
+}
+
 function getDenMcpConnectionConnectStart(payload: unknown): DenMcpConnectionConnectStart | null {
   if (
     !isRecord(payload) ||
@@ -3214,6 +3254,15 @@ export function createDenClient(options: { baseUrl: string; apiBaseUrl?: string 
         { method: "GET", token, organizationId: orgId },
       );
       return getDenExternalMcpConnections(payload);
+    },
+
+    async listMcpConnectionPresets(orgId: string): Promise<DenExternalMcpPreset[]> {
+      const payload = await requestJson<unknown>(
+        baseUrls,
+        "/v1/mcp-connections/presets",
+        { method: "GET", token, organizationId: orgId },
+      );
+      return getDenExternalMcpPresets(payload);
     },
 
     async startMcpConnectionConnect(orgId: string, connectionId: string): Promise<DenMcpConnectionConnectStart> {

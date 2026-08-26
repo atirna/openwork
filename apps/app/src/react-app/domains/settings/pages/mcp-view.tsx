@@ -58,7 +58,7 @@ import {
   revealDesktopItemInDir,
   type OpencodeConfigFile,
 } from "../../../../app/lib/desktop";
-import { readDenSettings } from "../../../../app/lib/den";
+import { readDenSettings, type DenExternalMcpPreset } from "../../../../app/lib/den";
 import {
   getMcpIdentityKey,
   normalizeMcpSlug,
@@ -117,6 +117,7 @@ import {
 } from "../library";
 import { AddLibraryItemModal } from "./add-library-item-modal";
 import { LibraryAddControl } from "./library-add-control";
+import { libraryConnectorCues } from "../library-connector-cues";
 import {
   denAddUrl,
   openInDenLibraryUrl,
@@ -456,6 +457,7 @@ export function McpView(props: McpViewProps) {
   const [layout, setLayout] = useState<ExtensionLayout>(readExtensionLayout);
   const [claudeImportOpen, setClaudeImportOpen] = useState(false);
   const [addAuthorableKind, setAddAuthorableKind] = useState<LibraryAuthorableKind | null>(null);
+  const [connectorPresets, setConnectorPresets] = useState<DenExternalMcpPreset[]>([]);
   const [, setExtensionStateVersion] = useState(0);
 
   const [localState, dispatchLocal] = useReducer(
@@ -546,6 +548,30 @@ export function McpView(props: McpViewProps) {
   };
   const libraryCloudSignedIn = cloudSession.isSignedIn
     || (Boolean(cloudSession.authToken.trim()) && denAuth.isSignedIn);
+  const activeOrganizationId = cloudSession.activeOrganization?.id.trim() ?? "";
+  useEffect(() => {
+    let current = true;
+    if (!libraryCloudSignedIn || !activeOrganizationId) {
+      setConnectorPresets([]);
+      return () => {
+        current = false;
+      };
+    }
+
+    setConnectorPresets([]);
+    void cloudSession.client.listMcpConnectionPresets(activeOrganizationId)
+      .then((presets) => {
+        if (current) setConnectorPresets(presets);
+      })
+      .catch(() => {
+        if (current) setConnectorPresets([]);
+      });
+
+    return () => {
+      current = false;
+    };
+  }, [activeOrganizationId, cloudSession.client, libraryCloudSignedIn]);
+  const connectorCues = libraryConnectorCues(connectorPresets);
   const libraryAddOptions = {
     cloudSignedIn: libraryCloudSignedIn,
     allowManageExtensions: props.allowManageExtensions,
@@ -1300,6 +1326,7 @@ export function McpView(props: McpViewProps) {
         <div className="mb-5 flex justify-end">
           <LibraryAddControl
             kinds={skillAddPending ? ["skill"] : libraryAddKinds}
+            connectorCues={connectorCues}
             pending={skillAddPending}
             onSelect={handleAddKind}
           />

@@ -14,10 +14,21 @@ import {
 } from "@/components/ui/dialog";
 import { t } from "../../../../i18n";
 import { cn } from "@/lib/utils";
+import {
+  libraryConnectorIconUrls,
+  type LibraryConnectorCue,
+} from "../library-connector-cues";
 import type { LibraryAddKind } from "../library";
 
-const MAKE_KINDS: LibraryAddKind[] = ["skill", "command", "agent", "plugin"];
-const CONNECT_KINDS: LibraryAddKind[] = ["mcp", "workspace-mcp", "connection"];
+const PICKER_KIND_ORDER: LibraryAddKind[] = [
+  "skill",
+  "command",
+  "agent",
+  "plugin",
+  "mcp",
+  "workspace-mcp",
+  "connection",
+];
 
 type KindMeta = {
   title: string;
@@ -78,6 +89,7 @@ function KindOptionRow(props: {
   kind: LibraryAddKind;
   selected: boolean;
   onSelect: () => void;
+  connectorCues: LibraryConnectorCue[];
 }) {
   const meta = kindMeta(props.kind);
   const Icon = meta.icon;
@@ -120,43 +132,59 @@ function KindOptionRow(props: {
         <span className="mt-0.5 block text-[13px] leading-[18px] text-dls-secondary">
           {meta.description}
         </span>
+        {props.kind === "connection" && props.connectorCues.length > 0 ? (
+          <span
+            className="mt-2 flex min-w-0 flex-wrap items-center gap-1.5"
+            data-testid="connection-logo-cues"
+          >
+            {props.connectorCues.map((cue) => (
+              <ConnectorLogoCue key={cue.id} cue={cue} />
+            ))}
+          </span>
+        ) : null}
       </span>
     </button>
   );
 }
 
-function KindSection(props: {
-  label: string;
-  kinds: LibraryAddKind[];
-  selected: LibraryAddKind;
-  onSelect: (kind: LibraryAddKind) => void;
-}) {
-  if (props.kinds.length === 0) return null;
+function ConnectorLogoCue({ cue }: { cue: LibraryConnectorCue }) {
+  const [imageIndex, setImageIndex] = useState(0);
+  const iconUrls = libraryConnectorIconUrls(cue);
+  const iconUrl = iconUrls[imageIndex];
+
+  useEffect(() => {
+    setImageIndex(0);
+  }, [cue.faviconDomain, cue.iconSlug, cue.iconSrc, cue.id, cue.serviceUrl]);
+
   return (
-    <div className="flex flex-col gap-2">
-      <div className="flex items-center gap-3">
-        <p className="shrink-0 font-mono text-[11px] font-medium tracking-[0.12em] text-dls-secondary">
-          {props.label}
-        </p>
-        <span className="h-px flex-1 bg-dls-border" />
-      </div>
-      <div role="radiogroup" aria-label={props.label} className="flex flex-col gap-1">
-        {props.kinds.map((kind) => (
-          <KindOptionRow
-            key={kind}
-            kind={kind}
-            selected={props.selected === kind}
-            onSelect={() => props.onSelect(kind)}
-          />
-        ))}
-      </div>
-    </div>
+    <span
+      className="flex size-7 shrink-0 items-center justify-center rounded-lg border border-dls-border bg-white p-1 shadow-xs"
+      data-connector-cue={cue.id}
+      title={cue.name}
+    >
+      {iconUrl ? (
+        <img
+          src={iconUrl}
+          alt={`${cue.name} logo`}
+          className="size-full object-contain"
+          onError={() => setImageIndex((current) => current + 1)}
+        />
+      ) : (
+        <span
+          aria-label={`${cue.name} logo`}
+          className="text-[10px] font-semibold uppercase text-slate-700"
+        >
+          {cue.name.slice(0, 1)}
+        </span>
+      )}
+    </span>
   );
 }
 
 export function LibraryAddKindPicker(props: {
   open: boolean;
   kinds: LibraryAddKind[];
+  connectorCues?: LibraryConnectorCue[];
   onClose: () => void;
   onSelect: (kind: LibraryAddKind) => void;
 }) {
@@ -170,8 +198,7 @@ export function LibraryAddKindPicker(props: {
     ));
   }, [props.open, props.kinds]);
 
-  const makeKinds = MAKE_KINDS.filter((kind) => props.kinds.includes(kind));
-  const connectKinds = CONNECT_KINDS.filter((kind) => props.kinds.includes(kind));
+  const orderedKinds = PICKER_KIND_ORDER.filter((kind) => props.kinds.includes(kind));
 
   const handleContinue = () => {
     if (!selected) return;
@@ -201,19 +228,21 @@ export function LibraryAddKindPicker(props: {
             {t("extensions.add_picker_hint")}
           </DialogDescription>
         </DialogHeader>
-        <div className="flex flex-col gap-5">
-          <KindSection
-            label={t("extensions.add_picker_make")}
-            kinds={makeKinds}
-            selected={selected ?? makeKinds[0] ?? connectKinds[0] ?? "skill"}
-            onSelect={setSelected}
-          />
-          <KindSection
-            label={t("extensions.add_picker_connect")}
-            kinds={connectKinds}
-            selected={selected ?? makeKinds[0] ?? connectKinds[0] ?? "skill"}
-            onSelect={setSelected}
-          />
+        <div
+          role="radiogroup"
+          aria-label={t("extensions.add_picker_title")}
+          className="flex min-w-0 flex-col gap-1"
+          data-testid="library-add-choices"
+        >
+          {orderedKinds.map((kind) => (
+            <KindOptionRow
+              key={kind}
+              kind={kind}
+              selected={selected === kind}
+              onSelect={() => setSelected(kind)}
+              connectorCues={props.connectorCues ?? []}
+            />
+          ))}
         </div>
         <DialogFooter>
           <p className="me-auto text-xs text-dls-secondary">

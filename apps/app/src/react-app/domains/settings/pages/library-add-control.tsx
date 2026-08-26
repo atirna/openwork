@@ -5,6 +5,7 @@ import { Loader2, Plus } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { t } from "../../../../i18n";
 import type { LibraryAddKind } from "../library";
+import type { LibraryConnectorCue } from "../library-connector-cues";
 import { LibraryAddKindPicker } from "./library-add-kind-picker";
 
 export function libraryAddKindLabel(kind: LibraryAddKind) {
@@ -28,6 +29,7 @@ export function libraryAddKindLabel(kind: LibraryAddKind) {
 
 export function LibraryAddControl(props: {
   kinds: LibraryAddKind[];
+  connectorCues?: LibraryConnectorCue[];
   onSelect: (kind: LibraryAddKind) => void;
   pending?: boolean;
   size?: "xs" | "sm" | "default";
@@ -73,6 +75,7 @@ export function LibraryAddControl(props: {
       <LibraryAddKindPicker
         open={pickerOpen}
         kinds={kinds}
+        connectorCues={props.connectorCues}
         onClose={() => setPickerOpen(false)}
         onSelect={props.onSelect}
       />

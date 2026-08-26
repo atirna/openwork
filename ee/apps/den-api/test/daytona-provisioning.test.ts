@@ -1,4 +1,4 @@
-import { DaytonaConflictError } from "@daytonaio/sdk"
+import { DaytonaConflictError, DaytonaNotFoundError } from "@daytonaio/sdk"
 import { createDenTypeId } from "@openwork-ee/utils/typeid"
 import { beforeAll, describe, expect, test } from "bun:test"
 import type { DaytonaProvisioningRuntime, DaytonaSandboxRuntime } from "../src/workers/daytona.js"
@@ -7,6 +7,7 @@ type DaytonaModule = typeof import("../src/workers/daytona.js")
 type ProvisionInput = Parameters<DaytonaModule["provisionWorkerOnDaytonaWithRuntime"]>[0]
 type UpsertInput = Parameters<DaytonaProvisioningRuntime["upsertSandbox"]>[0]
 type CreateInput = Parameters<DaytonaProvisioningRuntime["createSandbox"]>[0]
+type SandboxLookupResult = DaytonaSandboxRuntime | Error | null
 
 function seedRequiredEnv() {
   process.env.DATABASE_URL = process.env.DATABASE_URL ?? "mysql://root:password@127.0.0.1:3306/openwork_test"
@@ -34,6 +35,10 @@ function provisionInput(): ProvisionInput {
     clientToken: "client-token",
     activityToken: "activity-token",
   }
+}
+
+function daytonaNotFoundError(name: string) {
+  return new DaytonaNotFoundError(`sandbox ${name} not found`)
 }
 
 function makeSandbox(input: {
@@ -106,8 +111,8 @@ function makeSandbox(input: {
 
 function makeRuntime(input: {
   sandboxName?: string
-  nameResults?: Array<DaytonaSandboxRuntime | null>
-  nameResultsByName?: Array<{ name: string; results: Array<DaytonaSandboxRuntime | null> }>
+  nameResults?: SandboxLookupResult[]
+  nameResultsByName?: Array<{ name: string; results: SandboxLookupResult[] }>
   createdSandbox?: DaytonaSandboxRuntime
   createError?: Error
   checkpointExists?: boolean
@@ -138,6 +143,9 @@ function makeRuntime(input: {
           ? entry.results[lookupCount]
           : entry.results[entry.results.length - 1]
         lookupCounts.set(sandboxIdOrName, lookupCount + 1)
+        if (result instanceof Error) {
+          throw result
+        }
         if (result) {
           return result
         }
@@ -214,6 +222,59 @@ describe("Daytona Cloud provisioning adoption", () => {
     expect(runtime.healthChecks).toBe(1)
     expect(runtime.upserts).toHaveLength(1)
     expect(runtime.upserts[0]?.sandboxId).toBe("sbx_existing")
+  })
+
+  test("rechecks a create conflict through Daytona's read-after-write window", async () => {
+    const input = provisionInput()
+    const sandboxName = daytona.currentDaytonaSandboxName(input)
+    const existing = makeSandbox({ id: "sbx_late_visible", state: "started" })
+    const notFound = daytonaNotFoundError(sandboxName)
+    const runtime = makeRuntime({
+      nameResultsByName: [{
+        name: sandboxName,
+        results: [notFound, notFound, notFound, notFound, notFound, notFound, existing.sandbox],
+      }],
+      createError: new DaytonaConflictError("Sandbox with name already exists"),
+    })
+    const sleeps: number[] = []
+
+    const result = await daytona.provisionWorkerOnDaytonaWithRuntime(input, runtime.runtime, {
+      sleep: async (ms) => {
+        sleeps.push(ms)
+      },
+    })
+
+    expect(result.status).toBe("healthy")
+    expect(runtime.createCalls).toBe(1)
+    expect(runtime.nameLookups.filter((name) => name === sandboxName)).toHaveLength(7)
+    expect(sleeps).toEqual([2_000, 2_000, 2_000, 2_000, 2_000])
+    expect(runtime.upserts[0]?.sandboxId).toBe("sbx_late_visible")
+  })
+
+  test("bounds create-conflict rechecks when the sandbox stays missing", async () => {
+    const input = provisionInput()
+    const currentName = daytona.currentDaytonaSandboxName(input)
+    const legacyName = daytona.daytonaSandboxName(input)
+    const runtime = makeRuntime({
+      nameResultsByName: [
+        { name: currentName, results: [daytonaNotFoundError(currentName)] },
+        { name: legacyName, results: [daytonaNotFoundError(legacyName)] },
+      ],
+      createError: new DaytonaConflictError("Sandbox with name already exists"),
+    })
+    const sleeps: number[] = []
+
+    await expect(daytona.provisionWorkerOnDaytonaWithRuntime(input, runtime.runtime, {
+      sleep: async (ms) => {
+        sleeps.push(ms)
+      },
+    })).rejects.toThrow("Sandbox with name already exists")
+
+    expect(runtime.createCalls).toBe(1)
+    expect(runtime.nameLookups.filter((name) => name === currentName)).toHaveLength(7)
+    expect(runtime.nameLookups.filter((name) => name === legacyName)).toHaveLength(7)
+    expect(sleeps).toEqual([2_000, 2_000, 2_000, 2_000, 2_000])
+    expect(runtime.upserts).toHaveLength(0)
   })
 
   test("creates a new sandbox when the deterministic name is unused", async () => {

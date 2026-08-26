@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto"
-import { Daytona, DaytonaConflictError, type CreateSandboxFromImageParams, type CreateSandboxFromSnapshotParams, type Sandbox } from "@daytonaio/sdk"
+import { Daytona, DaytonaConflictError, DaytonaNotFoundError, type CreateSandboxFromImageParams, type CreateSandboxFromSnapshotParams, type Sandbox } from "@daytonaio/sdk"
 import { eq } from "@openwork-ee/den-db/drizzle"
 import { DaytonaSandboxTable, WorkerTable } from "@openwork-ee/den-db/schema"
 import { createDenTypeId } from "@openwork-ee/utils/typeid"
@@ -92,6 +92,8 @@ const signedPreviewRefreshLeadMs = 5 * 60 * 1000
 const wakeStartMaxAttempts = 3
 const wakeStartRetryBackoffMs = 250
 const wakeStartStateChangeTimeoutMs = 60_000
+const createConflictLookupMaxAttempts = 6
+const createConflictLookupBackoffMs = 2_000
 const logger = appLogger.child({ component: "daytona_provisioner" })
 
 const slug = (value: string) =>
@@ -155,6 +157,10 @@ function assertDaytonaConfig() {
 function isDaytonaNotFoundError(error: unknown) {
   if (!(error instanceof Error)) {
     return false
+  }
+
+  if (error instanceof DaytonaNotFoundError || error.name === "DaytonaNotFoundError") {
+    return true
   }
 
   const message = error.message.toLowerCase()
@@ -1025,6 +1031,25 @@ async function getSandboxByName(runtime: DaytonaProvisioningRuntime, name: strin
   }
 }
 
+async function getSandboxAfterCreateConflict(
+  runtime: DaytonaProvisioningRuntime,
+  lookupNames: string[],
+  wait: (ms: number) => Promise<unknown>,
+) {
+  for (let attempt = 1; attempt <= createConflictLookupMaxAttempts; attempt += 1) {
+    for (const lookupName of lookupNames) {
+      const sandbox = await getSandboxByName(runtime, lookupName)
+      if (sandbox) return sandbox
+    }
+
+    if (attempt < createConflictLookupMaxAttempts) {
+      await wait(createConflictLookupBackoffMs)
+    }
+  }
+
+  return null
+}
+
 type StartedOpenWorkProcess = {
   signedPreviewUrl: string
   signedPreviewUrlExpiresAt: Date
@@ -1242,6 +1267,7 @@ async function adoptDaytonaSandbox(input: {
 export async function provisionWorkerOnDaytonaWithRuntime(
   input: ProvisionInput,
   runtime: DaytonaProvisioningRuntime,
+  options: { sleep?: (ms: number) => Promise<unknown> } = {},
 ): Promise<ProvisionedInstance> {
   const name = currentDaytonaSandboxName(input)
   const lookupNames = daytonaSandboxLookupNames(input)
@@ -1270,11 +1296,9 @@ export async function provisionWorkerOnDaytonaWithRuntime(
     }
 
     if (isDaytonaConflictError(error)) {
-      for (const lookupName of lookupNames) {
-        const conflictSandbox = await getSandboxByName(runtime, lookupName)
-        if (conflictSandbox) {
-          return adoptDaytonaSandbox({ provisionInput: input, runtime, sandbox: conflictSandbox, sharedVolume })
-        }
+      const conflictSandbox = await getSandboxAfterCreateConflict(runtime, lookupNames, options.sleep ?? sleep)
+      if (conflictSandbox) {
+        return adoptDaytonaSandbox({ provisionInput: input, runtime, sandbox: conflictSandbox, sharedVolume })
       }
     }
 
