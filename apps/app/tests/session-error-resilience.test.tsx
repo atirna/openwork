@@ -185,6 +185,27 @@ describe("session error resilience", () => {
     expect(html).toContain("Resume")
   })
 
+  test("renders a resumable interruption as a quiet status line, not an error card", () => {
+    const html = renderErrorTranscriptWithResume({
+      name: "MessageAbortedError",
+      data: { message: "Aborted" },
+    })
+
+    expect(html).toContain("Task interrupted")
+    expect(html).toContain('data-testid="session-error-interrupted"')
+    expect(html).not.toContain("border-destructive/30")
+    expect(html).not.toContain("bg-destructive/5")
+  })
+
+  test("keeps the destructive card for errors that cannot be resumed", () => {
+    const html = renderErrorTranscriptWithResume({
+      name: "ProviderAuthError",
+      data: { message: "Provider authentication failed" },
+    })
+
+    expect(html).toContain("border-destructive/30")
+  })
+
   test("offers Resume on the error card for a provider timeout", () => {
     const html = renderErrorTranscriptWithResume({
       name: "ProviderHeaderTimeoutError",

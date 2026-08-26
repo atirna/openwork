@@ -226,6 +226,12 @@ body {
   text-decoration: var(--shiki-dark-text-decoration) !important;
 }
 
+/* Inline Shiki-highlighted shell commands (chat tool rows) use the same
+   dual-theme variables as the markdown code blocks above. */
+:is(.dark, [data-theme="dark"]) [data-shell-command-highlighted] span {
+  color: var(--shiki-dark) !important;
+}
+
 /* KaTeX sets its own absolute font-size; keep formulas at the surrounding text size
    so inline math does not tower over the sentence it sits in. */
 .markdown-content .katex {

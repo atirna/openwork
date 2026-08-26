@@ -1,9 +1,10 @@
 "use client"
 
 import { Fragment, useState } from "react"
-import { CircleHelp, CirclePause, MoreHorizontal } from "lucide-react"
+import { AlertTriangle, CircleHelp, CirclePause, MoreHorizontal } from "lucide-react"
 
 import { FileChip } from "@/components/chat/file-chip"
+import { ShellCommandText } from "@/components/chat/shell-command-text"
 import { ReasoningBlock } from "@/components/chat/reasoning-block"
 import { useCurrentToolLifecycleResolver } from "@/components/chat/current-tool-lifecycle-context"
 import {
@@ -13,6 +14,7 @@ import {
   getAggregateRowFile,
   getAggregateRowLabel,
   getAggregateSummary,
+  getToolFamily,
   type AggregateThought,
   type AnyToolPart,
 } from "@/lib/tool-aggregate"
@@ -46,10 +48,55 @@ function failureReason(part: AnyToolPart): string | null {
   return firstLine ? (firstLine.length > 120 ? `${firstLine.slice(0, 119)}…` : firstLine) : null
 }
 
+type AggregateRow = {
+  /** The most recent call in the row (drives status, label, key). */
+  part: AnyToolPart
+  /** Original index of the row's first call — anchors interleaved thoughts. */
+  index: number
+  /** Original index of the row's latest call — picks its frozen duration. */
+  lastIndex: number
+  /** How many identical calls this row represents. */
+  repeat: number
+}
+
+/**
+ * The header summary counts unique files ("Read 1 file"), so repeated
+ * settled reads of the same file collapse into one row with a ×N badge
+ * instead of rendering as confusing duplicates. A thought anchored
+ * between two reads keeps them apart to preserve chronology.
+ */
+export function buildAggregateRows(parts: AnyToolPart[], thoughts: AggregateThought[]): AggregateRow[] {
+  const hasThoughtAt = (index: number) => thoughts.some((thought) => thought.afterIndex === index)
+  const rows: AggregateRow[] = []
+  parts.forEach((part, index) => {
+    const previous = rows.at(-1)
+    const file = getAggregateRowFile(part)
+    const previousFile = previous ? getAggregateRowFile(previous.part) : null
+    const mergeable =
+      previous !== undefined &&
+      file !== null &&
+      previousFile !== null &&
+      getToolFamily(part) === "read" &&
+      getToolFamily(previous.part) === "read" &&
+      file.path === previousFile.path &&
+      persistedRowStatus(part) === "done" &&
+      persistedRowStatus(previous.part) === "done" &&
+      !hasThoughtAt(index)
+    if (mergeable) {
+      previous.part = part
+      previous.lastIndex = index
+      previous.repeat += 1
+      return
+    }
+    rows.push({ part, index, lastIndex: index, repeat: 1 })
+  })
+  return rows
+}
+
 /**
  * Paper "Recurring actions · aggregate + latest": one line with live
- * totals while running plus a self-replacing "Now:" line; past-tense
- * summary when done. Chevron expands the chronological list — status
+ * totals while running plus a self-replacing shimmer line naming the
+ * current action; past-tense summary when done. Chevron expands the chronological list — status
  * dot, monospace action, per-item duration — capped with "Show N more".
  */
 export function ToolAggregateGroup({ parts, thoughts = [], className }: ToolAggregateGroupProps) {
@@ -92,12 +139,62 @@ export function ToolAggregateGroup({ parts, thoughts = [], className }: ToolAggr
   const durations = parts.map((part) => trackToolCallDuration(part))
   const singleCommand = parts.length === 1 && Boolean(parts[0] && isBashToolPart(parts[0]))
   const singleCommandDuration = singleCommand ? durations[0] : null
-  const visibleParts = showAll ? parts : parts.slice(0, ROW_CAP)
-  const hiddenCount = parts.length - visibleParts.length
+  const rows = buildAggregateRows(parts, thoughts)
+  const visibleRows = showAll ? rows : rows.slice(0, ROW_CAP)
+  const hiddenCount = rows.length - visibleRows.length
   // Expanded rows interleave the run's thoughts at their chronological
   // slots; thoughts belonging to capped rows stay behind "Show N more".
   const thoughtsAt = (index: number) => thoughts.filter((thought) => thought.afterIndex === index)
   const trailingThoughts = hiddenCount > 0 ? [] : thoughts.filter((thought) => thought.afterIndex >= parts.length)
+
+  // "Edited 1 file" above "Edited file-chip.tsx" says nothing twice.
+  // A group that is exactly one file action (and no thoughts) renders
+  // as the row itself — verb, chip, duration — with nothing to expand.
+  const soloRow = rows.length === 1 && thoughts.length === 0 ? rows[0] : undefined
+  const soloFile = soloRow ? getAggregateRowFile(soloRow.part) : null
+  if (soloRow && soloFile) {
+    const status = currentLifecycle ?? persistedRowStatus(soloRow.part)
+    const reason = failureReason(soloRow.part)
+    return (
+      <div
+        className={className}
+        data-tool-aggregate={latestToolCallId}
+        data-tool-lifecycle={currentLifecycle ?? (visiblyRunning ? "running" : "settled")}
+      >
+        <div className="flex min-w-0 items-center gap-2 text-sm text-muted-foreground">
+          <span className={cn("shrink-0", status === "running" && "text-foreground ow-text-shimmer")}>
+            {soloFile.verb}
+          </span>
+          <FileChip path={soloFile.path} className="min-w-0" />
+          {soloRow.repeat > 1 ? (
+            <span data-tool-aggregate-repeat className="shrink-0 text-xs text-muted-foreground/70">
+              ×{soloRow.repeat}
+            </span>
+          ) : null}
+          {durations[soloRow.lastIndex] ? (
+            <span className="shrink-0 tabular-nums text-xs text-muted-foreground/70">
+              {durations[soloRow.lastIndex]}
+            </span>
+          ) : null}
+        </div>
+        {status === "waiting" ? (
+          <div className="mt-1 flex items-center gap-1.5 text-xs text-amber-11" role="status">
+            <CirclePause aria-hidden="true" className="size-3.5 shrink-0" />
+            <span>Choose an option or approve the request to continue.</span>
+          </div>
+        ) : null}
+        {status === "interrupted" ? (
+          <div className="mt-1 flex items-center gap-1.5 text-xs text-destructive" role="alert">
+            <AlertTriangle aria-hidden="true" className="size-3.5 shrink-0" />
+            <span>This step stopped before it finished. Retry to continue.</span>
+          </div>
+        ) : null}
+        {reason ? (
+          <div className="mt-1 text-[11px] text-muted-foreground">failed — {reason}</div>
+        ) : null}
+      </div>
+    )
+  }
 
   return (
     <div
@@ -145,8 +242,7 @@ export function ToolAggregateGroup({ parts, thoughts = [], className }: ToolAggr
 
       {nowLabel ? (
         <div data-tool-aggregate-now className="mt-1 min-w-0 text-sm text-muted-foreground">
-          <span className="block min-w-0 truncate">
-            <span className="ow-text-shimmer">Now: </span>
+          <span className="ow-text-shimmer block min-w-0 truncate">
             {nowLabel}
           </span>
         </div>
@@ -160,7 +256,8 @@ export function ToolAggregateGroup({ parts, thoughts = [], className }: ToolAggr
 
       {expanded ? (
         <div className="mt-1.5 flex flex-col gap-1">
-          {visibleParts.map((part, index) => {
+          {visibleRows.map((row) => {
+            const part = row.part
             const lifecycle = resolveLifecycle(part.toolCallId, isToolPartInFlight(part))
             const status = isToolPartInFlight(part)
               ? lifecycle === "running" || lifecycle === "waiting"
@@ -175,8 +272,8 @@ export function ToolAggregateGroup({ parts, thoughts = [], className }: ToolAggr
               : ""
             return (
               <Fragment key={part.toolCallId}>
-              {thoughtsAt(index).map((thought) => (
-                <div key={`thought-${index}-${thought.afterIndex}`} data-tool-aggregate-thought className="py-1">
+              {thoughtsAt(row.index).map((thought) => (
+                <div key={`thought-${row.index}-${thought.afterIndex}`} data-tool-aggregate-thought className="py-1">
                   <ReasoningBlock text={thought.text} isStreaming={thought.isStreaming} />
                 </div>
               ))}
@@ -206,21 +303,31 @@ export function ToolAggregateGroup({ parts, thoughts = [], className }: ToolAggr
                     const file = getAggregateRowFile(part)
                     if (!file) {
                       return (
-                        <span className="min-w-0 truncate">
+                        <span className={cn("min-w-0 truncate", status === "running" && "ow-text-shimmer")}>
                           {getAggregateRowLabel(part)}
                         </span>
                       )
                     }
                     return (
                       <span className="flex min-w-0 items-center gap-1.5">
-                        <span className="shrink-0">{file.verb}</span>
+                        <span className={cn("shrink-0", status === "running" && "text-foreground ow-text-shimmer")}>
+                          {file.verb}
+                        </span>
                         <FileChip path={file.path} className="min-w-0" />
+                        {row.repeat > 1 ? (
+                          <span
+                            data-tool-aggregate-repeat
+                            className="shrink-0 text-xs text-muted-foreground/70"
+                          >
+                            ×{row.repeat}
+                          </span>
+                        ) : null}
                       </span>
                     )
                   })()}
-                  {durations[index] ? (
+                  {durations[row.lastIndex] ? (
                     <span className="shrink-0 tabular-nums text-muted-foreground/70">
-                      {durations[index]}
+                      {durations[row.lastIndex]}
                     </span>
                   ) : null}
                   </div>
@@ -228,10 +335,10 @@ export function ToolAggregateGroup({ parts, thoughts = [], className }: ToolAggr
                 {bash && command ? (
                   <div
                     data-tool-aggregate-command
-                    className="flex min-w-0 items-center gap-2 rounded-xl border border-border/70 bg-background px-3 py-2 font-mono text-sm shadow-xs"
+                    className="flex min-w-0 items-center gap-2 rounded-xl border border-border/70 bg-gray-2/60 px-3 py-2 font-mono text-sm"
                   >
                     <span className="shrink-0 text-muted-foreground/60">$</span>
-                    <code className="min-w-0 flex-1 truncate text-blue-11">{command}</code>
+                    <ShellCommandText command={command} className="min-w-0 flex-1 truncate" />
                     <MoreHorizontal aria-hidden="true" className="size-4 shrink-0 text-muted-foreground/70" />
                   </div>
                 ) : null}
