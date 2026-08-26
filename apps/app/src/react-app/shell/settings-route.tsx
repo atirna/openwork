@@ -119,7 +119,6 @@ import {
   openworkServerInfo,
   openworkServerRestart,
   engineStart,
-  engineRestart,
   resolveWorkspaceListSelectedId,
   workspaceBootstrap,
   workspaceForget,
@@ -460,9 +459,7 @@ function SettingsRouteContent(props: SettingsSurfaceProps = {}) {
   routeWorkspaceIdRef.current = routeWorkspaceId;
   const local = useLocal();
   const {
-    continuousEngineEnabled,
     memoryEnabled,
-    setContinuousEngine,
     toggleMemory,
   } = useFeatureFlagsPreferences();
   const platform = usePlatform();
@@ -518,7 +515,6 @@ function SettingsRouteContent(props: SettingsSurfaceProps = {}) {
   const [activeClient, setActiveClient] = useState<Client | null>(null);
   const [busy, setBusy] = useState(false);
   const [busyLabel, setBusyLabel] = useState<string | null>(null);
-  const [continuousEngineBusy, setContinuousEngineBusy] = useState(false);
   const workspacesRef = useRef<RouteWorkspace[]>([]);
   const lastRequestedRouteWorkspaceIdRef = useRef("");
   const refreshLifecycleRef = useRef(createRouteRefreshLifecycle());
@@ -1602,35 +1598,6 @@ function SettingsRouteContent(props: SettingsSurfaceProps = {}) {
     }
   }, [markBootRouteReady, navigationSessionId, navigationWorkspaceId, routeWorkspaceId]);
 
-  const handleToggleContinuousEngine = useCallback(async () => {
-    if (!isDesktopRuntime()) return;
-    if (activeReloadBlockingSessions.length > 0) {
-      toast.error(t("settings.engine_rollover_blocked"));
-      return;
-    }
-    const next = !continuousEngineEnabled;
-    setContinuousEngineBusy(true);
-    setContinuousEngine(next);
-    try {
-      await engineRestart({ engineRollover: next });
-      await openworkServerStore.reconnectOpenworkServer();
-      await refreshRouteState();
-    } catch (error) {
-      setContinuousEngine(!next);
-      toast.error(t("settings.engine_rollover_failed"), {
-        description: describeRouteError(error),
-      });
-    } finally {
-      setContinuousEngineBusy(false);
-    }
-  }, [
-    activeReloadBlockingSessions.length,
-    continuousEngineEnabled,
-    openworkServerStore,
-    refreshRouteState,
-    setContinuousEngine,
-  ]);
-
   const reloadWorkspaceEngineFromUi = useCallback(async () => {
     const workspaceId = routeStateRef.current.runtimeWorkspaceId?.trim() || selectedWorkspaceId.trim();
     if (!openworkClient || !workspaceId) {
@@ -2455,10 +2422,6 @@ function SettingsRouteContent(props: SettingsSurfaceProps = {}) {
             onDesktopNotificationsChange={(desktopNotifications) => {
               local.setPrefs((previous) => ({ ...previous, desktopNotifications }));
             }}
-            continuousEngineAvailable={isDesktopRuntime()}
-            continuousEngineEnabled={continuousEngineEnabled}
-            continuousEngineBusy={continuousEngineBusy || activeReloadBlockingSessions.length > 0}
-            onToggleContinuousEngine={handleToggleContinuousEngine}
             memoryEnabled={memoryEnabled}
             onToggleMemory={toggleMemory}
           />

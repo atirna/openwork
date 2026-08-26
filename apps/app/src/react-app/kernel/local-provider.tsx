@@ -48,8 +48,6 @@ export type LocalPreferences = {
   releaseChannel: ReleaseChannel;
   featureFlags: {
     microsandboxCreateSandbox: boolean;
-    /** Keep active tasks on a draining engine while a fresh engine takes new work. */
-    continuousEngine: boolean;
     /**
      * Memory Bank preview. Client-only, per-device, never synced. Gates desktop
      * UI surfacing (the management panel + copy-prompt affordance); the routes
@@ -95,7 +93,7 @@ const INITIAL_PREFS: LocalPreferences = {
   defaultModel: null,
   selectedAgent: null,
   releaseChannel: "stable",
-  featureFlags: { microsandboxCreateSandbox: true, continuousEngine: false, memory: false },
+  featureFlags: { microsandboxCreateSandbox: true, memory: false },
   hasCompletedOnboarding: false,
   analyticsEnabled: true,
   desktopNotifications: DEFAULT_DESKTOP_NOTIFICATION_PREFERENCE,

@@ -28,7 +28,6 @@ describe("openworkServerSettingsChanged", () => {
 function serverInfo(overrides: Partial<OpenworkServerInfo> = {}): OpenworkServerInfo {
   return {
     running: false,
-    engineRollover: false,
     remoteAccessEnabled: false,
     host: null,
     port: null,

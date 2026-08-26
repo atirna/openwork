@@ -181,7 +181,6 @@ async function createFixture(options?: { bin?: "ready" | "unready" }): Promise<F
     hostTokenSource: "cli",
     logFormat: "pretty",
     logRequests: false,
-    engineRollover: true,
   } as ServerConfig;
 
   const template: EngineSpawnTemplate = {

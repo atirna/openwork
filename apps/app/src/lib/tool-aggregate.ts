@@ -8,10 +8,21 @@ import {
   isGrepToolPart,
   isReadToolPart,
   isWriteToolPart,
-} from "@/lib/build-in-tools"
-import { getToolActivityLabel, isToolPartInFlight } from "@/lib/tool-activity"
+} from "./build-in-tools"
+import { getToolActivityLabel, isToolPartInFlight } from "./tool-activity"
 
 export type AnyToolPart = ToolUIPart | DynamicToolUIPart
+
+/**
+ * A thought that happened inside an aggregate run, anchored to its
+ * chronological slot: `afterIndex` is how many of the run's tool calls
+ * had already happened when the model produced it.
+ */
+export type AggregateThought = {
+  afterIndex: number
+  text: string
+  isStreaming: boolean
+}
 
 /**
  * Paper "Recurring actions · aggregate + latest": consecutive tool calls

@@ -384,7 +384,6 @@ function createOpenworkServerState() {
     child: null,
     childExited: true,
     inProcess: false,
-    engineRollover: false,
     // Monotonic per-start identity assigned by startOpenworkServerInner.
     // Sticky ports and persisted tokens make the connection details identical
     // across restarts, so clients need this to observe a new server lifetime.
@@ -412,7 +411,6 @@ export function snapshotOpenworkServerState(state) {
   const running = state.inProcess || Boolean(child && child.exitCode === null && !child.killed);
   return {
     running,
-    engineRollover: state.engineRollover === true,
     generation: typeof state.generation === "number" ? state.generation : null,
     remoteAccessEnabled: state.remoteAccessEnabled,
     host: state.host,
@@ -433,8 +431,32 @@ export function snapshotOpenworkServerState(state) {
   };
 }
 
-export function resolveEngineRolloverPreference(optionValue, persistedValue) {
-  return typeof optionValue === "boolean" ? optionValue : persistedValue === true;
+/**
+ * Decide whether an engineStart request keeps the running embedded server.
+ *
+ * The engine is multi-instance: it boots a per-directory instance on demand,
+ * so a request for a different workspace retargets the running runtime
+ * instead of restarting it. A restart here would abort every in-flight run,
+ * including sessions still working in the workspace being left. Only an
+ * explicit forceRestart or a host rebind (remote access change) gives up the
+ * running server.
+ */
+export function resolveOpenworkServerReuse({
+  forceRestart,
+  inProcess,
+  lifecycleState,
+  remoteAccessEnabled,
+  requestedRemoteAccess,
+  currentProjectDir,
+  requestedProjectDir,
+  platform,
+}) {
+  if (forceRestart === true) return { reuse: false, retarget: false };
+  if (inProcess !== true || lifecycleState !== "healthy") return { reuse: false, retarget: false };
+  if (remoteAccessEnabled !== (requestedRemoteAccess === true)) return { reuse: false, retarget: false };
+  const retarget =
+    normalizeWorkspaceKey(currentProjectDir, platform) !== normalizeWorkspaceKey(requestedProjectDir, platform);
+  return { reuse: true, retarget };
 }
 
 /**
@@ -1426,7 +1448,6 @@ export function createRuntimeManager({
       version: 4,
       workspacePorts: {},
       preferredPort: null,
-      engineRollover: false,
     });
   }
 
@@ -1468,18 +1489,6 @@ export function createRuntimeManager({
     } else {
       state.preferredPort = port;
     }
-    await savePortState(state);
-  }
-
-  async function readEngineRolloverPreference() {
-    const state = await loadPortState();
-    return state.engineRollover === true;
-  }
-
-  async function persistEngineRolloverPreference(enabled) {
-    const state = await loadPortState();
-    state.version = 4;
-    state.engineRollover = enabled === true;
     await savePortState(state);
   }
 
@@ -1863,14 +1872,7 @@ export function createRuntimeManager({
     // The inner start stops any previous runtime before mutating state, so a
     // throw below always happens with nothing left running.
     try {
-      const engineRollover = resolveEngineRolloverPreference(
-        options.engineRollover,
-        await readEngineRolloverPreference(),
-      );
-      if (typeof options.engineRollover === "boolean") {
-        await persistEngineRolloverPreference(engineRollover);
-      }
-      return await startOpenworkServerInner({ ...options, engineRollover });
+      return await startOpenworkServerInner(options);
     } catch (error) {
       resetRuntimeStatesAfterFailedServerStart(openworkServerState, engineState, options);
       throw error;
@@ -1954,7 +1956,6 @@ export function createRuntimeManager({
       opencodeBin: managedOpencode?.path ?? undefined,
       opencodeCwd: managedOpencodeWorkdir(),
       localManagedMcpVaultKey,
-      engineRollover: options.engineRollover === true,
     });
     inProcessServer = handle;
     openworkServerState.managedOpencodeExecution = handle.managedOpencodeExecution ?? null;
@@ -1966,7 +1967,6 @@ export function createRuntimeManager({
     const baseUrl = handle.url;
 
     openworkServerState.inProcess = true;
-    openworkServerState.engineRollover = options.engineRollover === true;
     openworkServerGenerationCounter += 1;
     openworkServerState.generation = openworkServerGenerationCounter;
     openworkServerState.remoteAccessEnabled = options.remoteAccessEnabled;
@@ -2068,7 +2068,6 @@ export function createRuntimeManager({
         remoteAccessEnabled: options.remoteAccessEnabled,
         manageOpencode: options.manageOpencode === true,
         opencodeBinPath: options.opencodeBinPath,
-        engineRollover: options.engineRollover,
       });
     } catch (error) {
       appendOutput(engineState, "lastStderr", `OpenWork server: ${error instanceof Error ? error.message : String(error)}\n`);
@@ -2098,21 +2097,36 @@ export function createRuntimeManager({
     // prepareFreshRuntime (killing the freshly bound server) and then rebinds
     // the sticky preferred port, racing the not-yet-released socket into
     // EADDRINUSE and leaving the runtime in error -> boot screen.
-    const requestedRemoteAccess = options.openworkRemoteAccess === true;
-    const requestedEngineRollover = resolveEngineRolloverPreference(
-      options.engineRollover,
-      await readEngineRolloverPreference(),
-    );
-    if (
-      options.forceRestart !== true &&
-      openworkServerState.inProcess &&
-      lifecycleState === "healthy" &&
-      normalizeWorkspaceKey(engineState.projectDir, workspacePlatform) === normalizeWorkspaceKey(safeProjectDir, workspacePlatform) &&
-      openworkServerState.remoteAccessEnabled === requestedRemoteAccess &&
-      openworkServerState.engineRollover === requestedEngineRollover
-    ) {
+    // resolveOpenworkServerReuse also spans workspace switches: requesting a
+    // different projectDir retargets the running runtime instead of killing
+    // the process and every in-flight run with it.
+    const reuseDecision = resolveOpenworkServerReuse({
+      forceRestart: options.forceRestart,
+      inProcess: openworkServerState.inProcess,
+      lifecycleState,
+      remoteAccessEnabled: openworkServerState.remoteAccessEnabled,
+      requestedRemoteAccess: options.openworkRemoteAccess,
+      currentProjectDir: engineState.projectDir,
+      requestedProjectDir: safeProjectDir,
+      platform: workspacePlatform,
+    });
+    if (reuseDecision.reuse) {
       const existing = snapshotOpenworkServerState(openworkServerState);
       if (existing.running && existing.baseUrl && (existing.ownerToken || existing.clientToken)) {
+        if (reuseDecision.retarget) {
+          try {
+            safeProjectDir = await prepareRuntimeWorkspaceRoot(safeProjectDir, {
+              platform: workspacePlatform,
+              mkdirImpl: workspaceMkdir,
+              ensureConfig: ensureOpencodeConfig,
+            });
+          } catch (error) {
+            settleAfterWorkspacePreparationFailure();
+            throw error;
+          }
+          engineState.projectDir = safeProjectDir;
+          await persistPreferredOpenworkPort(safeProjectDir, openworkServerState.port);
+        }
         return snapshotEngineState(engineState);
       }
     }
@@ -2148,7 +2162,6 @@ export function createRuntimeManager({
         remoteAccessEnabled: options.openworkRemoteAccess === true,
         manageOpencode: true,
         opencodeBinPath: options.opencodeBinPath,
-        engineRollover: requestedEngineRollover,
       });
 
       lifecycleState = "healthy";
@@ -2179,9 +2192,6 @@ export function createRuntimeManager({
       workspacePaths: [projectDir],
       opencodeEnableExa: options.opencodeEnableExa,
       openworkRemoteAccess,
-      ...(typeof options.engineRollover === "boolean"
-        ? { engineRollover: options.engineRollover }
-        : {}),
       forceRestart: true,
     });
   }

@@ -87,7 +87,6 @@ export type DesktopIntegrationResult = {
 
 export type OpenworkServerInfo = {
   running: boolean;
-  engineRollover: boolean;
   /**
    * Monotonic per-start identity of the embedded server within this desktop
    * process. Sticky ports and persisted tokens keep the connection details

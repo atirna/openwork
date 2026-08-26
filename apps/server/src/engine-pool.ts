@@ -15,8 +15,8 @@
  * than two long-lived ones: a config change arriving mid-drain coalesces into
  * a single pending rollover (latest wins) instead of stacking processes.
  *
- * Off unless ServerConfig.engineRollover is set; the caller keeps its existing
- * defer-while-busy behavior when disabled.
+ * Always on for managed engines. Attached engines have no pool, so their
+ * callers keep the defer-while-busy behavior instead.
  */
 import { createHash, randomUUID } from "node:crypto";
 import { readFile } from "node:fs/promises";
@@ -1158,11 +1158,6 @@ export function setEnginePoolForConfig(config: ServerConfig, pool: EnginePool): 
 }
 
 export function enginePoolForConfig(config: ServerConfig): EnginePool | null {
-  if (!config.engineRollover) return null;
-  return poolByConfig.get(config) ?? null;
-}
-
-export function managedEnginePoolForConfig(config: ServerConfig): EnginePool | null {
   return poolByConfig.get(config) ?? null;
 }
 

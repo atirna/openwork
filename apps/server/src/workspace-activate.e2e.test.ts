@@ -234,7 +234,6 @@ async function startOpenworkServerWithWorkspaces(input: {
     hostTokenSource: "cli",
     logFormat: "pretty",
     logRequests: false,
-    engineRollover: false,
   };
   const server = await startServer(config) as Served;
   stops.push(() => server.stop(true));

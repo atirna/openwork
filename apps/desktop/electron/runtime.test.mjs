@@ -13,9 +13,9 @@ import {
   prepareRuntimeWorkspaceRoot,
   prioritizeWorkspacePaths,
   resetRuntimeStatesAfterFailedServerStart,
-  resolveEngineRolloverPreference,
   resolveEvalLocalServerDelayMs,
   resolveOpenworkServerConfigPath,
+  resolveOpenworkServerReuse,
   seedWorkspacePathsForEmbeddedServer,
   selectStickyOpenworkPortWorkspace,
   snapshotEngineState,
@@ -91,23 +91,72 @@ describe("bundled OpenCode runtime", () => {
   });
 });
 
-describe("engine rollover preference", () => {
-  it("uses an explicit value and otherwise restores the persisted value", () => {
-    assert.equal(resolveEngineRolloverPreference(true, false), true);
-    assert.equal(resolveEngineRolloverPreference(false, true), false);
-    assert.equal(resolveEngineRolloverPreference(undefined, true), true);
-    assert.equal(resolveEngineRolloverPreference(undefined, false), false);
-  });
-
-  it("reports the active mode in the desktop server snapshot", () => {
+describe("openwork server snapshot", () => {
+  it("reports a running in-process server", () => {
     const snapshot = snapshotOpenworkServerState({
       child: null,
       childExited: true,
       inProcess: true,
-      engineRollover: true,
     });
     assert.equal(snapshot.running, true);
-    assert.equal(snapshot.engineRollover, true);
+  });
+});
+
+describe("resolveOpenworkServerReuse", () => {
+  const healthy = {
+    forceRestart: undefined,
+    inProcess: true,
+    lifecycleState: "healthy",
+    remoteAccessEnabled: false,
+    requestedRemoteAccess: false,
+    currentProjectDir: "/Users/person/workspace-a",
+    requestedProjectDir: "/Users/person/workspace-a",
+    platform: "darwin",
+  };
+
+  it("reuses the running server for the same workspace", () => {
+    assert.deepEqual(resolveOpenworkServerReuse(healthy), { reuse: true, retarget: false });
+  });
+
+  it("retargets instead of restarting when a different workspace is requested", () => {
+    // Regression: a workspace switch (e.g. opening Settings while another
+    // workspace is routed) used to tear the server down here, aborting every
+    // in-flight run in the workspace being left.
+    assert.deepEqual(
+      resolveOpenworkServerReuse({ ...healthy, requestedProjectDir: "/Users/person/workspace-b" }),
+      { reuse: true, retarget: true },
+    );
+  });
+
+  it("treats case-only path differences as the same workspace on win32", () => {
+    assert.deepEqual(
+      resolveOpenworkServerReuse({
+        ...healthy,
+        platform: "win32",
+        currentProjectDir: "C:\\Work\\Space",
+        requestedProjectDir: "c:\\work\\space",
+      }),
+      { reuse: true, retarget: false },
+    );
+  });
+
+  it("gives up the server only for an explicit restart, host rebind, or unhealthy runtime", () => {
+    assert.deepEqual(
+      resolveOpenworkServerReuse({ ...healthy, forceRestart: true }),
+      { reuse: false, retarget: false },
+    );
+    assert.deepEqual(
+      resolveOpenworkServerReuse({ ...healthy, requestedRemoteAccess: true }),
+      { reuse: false, retarget: false },
+    );
+    assert.deepEqual(
+      resolveOpenworkServerReuse({ ...healthy, lifecycleState: "starting" }),
+      { reuse: false, retarget: false },
+    );
+    assert.deepEqual(
+      resolveOpenworkServerReuse({ ...healthy, inProcess: false }),
+      { reuse: false, retarget: false },
+    );
   });
 });
 

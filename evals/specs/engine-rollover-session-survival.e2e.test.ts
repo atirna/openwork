@@ -16,8 +16,9 @@ import type { TestNeeds } from "@openwork/testkit";
  * interrupting a task that is still running on the previous generation.
  *
  * The focused server suite proves the routing table. This tape proves the
- * product boundary: Desktop enables the preview, the real embedded runtime
- * exposes it as a capability, a long model task survives the flip, a new
+ * product boundary: continuous engine updates are the default — the embedded
+ * runtime advertises the rollover capability on a fresh boot with no
+ * preference or preview flag — a long model task survives the flip, a new
  * session can be created while both generations are live, and the old process
  * disappears only after its task finishes.
  */
@@ -91,12 +92,8 @@ test.skipIf(missingRequirements.length > 0)(title, { timeout: 900_000 }, async (
   if (!chosen) throw new Error("No selectable model was available for the rollover acceptance tape.");
   await selectModel(desktopApp, chosen.id);
 
-  const restarted = await evalIn(
-    desktopApp,
-    `window.__OPENWORK_ELECTRON__.invokeDesktop("engineRestart", { engineRollover: true })`,
-    { awaitPromise: true, timeoutMs: 120_000 },
-  );
-  expect(isRecord(restarted) && restarted.running === true).toBe(true);
+  // No preference, restart, or preview flag: a fresh boot must already
+  // advertise continuous engine updates.
   await eventually(async () => evalIn(desktopApp, `(async () => {
     const port = localStorage.getItem("openwork.server.port");
     const token = localStorage.getItem("openwork.server.token");
@@ -107,7 +104,7 @@ test.skipIf(missingRequirements.length > 0)(title, { timeout: 900_000 }, async (
     return response.ok && body?.engine?.rollover === true;
   })()`, { awaitPromise: true, timeoutMs: 30_000 }), {
     within: 90_000,
-    label: "rollover capability after desktop restart",
+    label: "rollover capability advertised by default",
     until: (available) => available === true,
   });
 

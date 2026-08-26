@@ -10,7 +10,6 @@ import {
   EnginePool,
   enginePoolForConfig,
   isEngineConnectionFailure,
-  managedEnginePoolForConfig,
   setEnginePoolForConfig,
   type EnginePoolConnection,
   type EngineEventProxyLease,
@@ -992,7 +991,7 @@ export async function startServer(config: ServerConfig): Promise<ServeResult> {
       engineMcpServerState,
       { forceStandby: true },
     ),
-    engineBusy: () => managedEnginePoolForConfig(config)
+    engineBusy: () => enginePoolForConfig(config)
       ? Promise.resolve(false)
       : engineHasActiveSessions(config, resolveEngineRuntimeWorkspace(config)),
     logger: toManagedProviderAuthLogger(logger),
@@ -1409,9 +1408,9 @@ export async function proxyOpencodeRequest(input: {
       headers,
       body,
     }).then(() => {
-      managedEnginePoolForConfig(input.config)?.reportRequestSuccess(baseUrl);
+      enginePoolForConfig(input.config)?.reportRequestSuccess(baseUrl);
     }).catch((error: unknown) => {
-      if (workspace) managedEnginePoolForConfig(input.config)?.reportRequestFailure(baseUrl, error, workspace);
+      if (workspace) enginePoolForConfig(input.config)?.reportRequestFailure(baseUrl, error, workspace);
       // Command failures are surfaced through the OpenCode event stream.
     });
     return jsonResponse({ ok: true, accepted: true });
@@ -1420,9 +1419,9 @@ export async function proxyOpencodeRequest(input: {
     let response: Response;
     try {
       response = await loopbackFetch(targetUrl, { method, headers, body });
-      managedEnginePoolForConfig(input.config)?.reportRequestSuccess(baseUrl);
+      enginePoolForConfig(input.config)?.reportRequestSuccess(baseUrl);
     } catch (error) {
-      if (workspace) managedEnginePoolForConfig(input.config)?.reportRequestFailure(baseUrl, error, workspace);
+      if (workspace) enginePoolForConfig(input.config)?.reportRequestFailure(baseUrl, error, workspace);
       if (isEngineConnectionFailure(error)) throw opencodeUnreachableError(error, proxyPath);
       throw error;
     }
@@ -1436,7 +1435,7 @@ export async function proxyOpencodeRequest(input: {
           { method, headers: fallbackHeaders, body },
         );
       } catch (error) {
-        if (workspace) managedEnginePoolForConfig(input.config)?.reportRequestFailure(route.fallback.baseUrl, error, workspace);
+        if (workspace) enginePoolForConfig(input.config)?.reportRequestFailure(route.fallback.baseUrl, error, workspace);
         if (isEngineConnectionFailure(error)) throw opencodeUnreachableError(error, proxyPath);
         throw error;
       }
@@ -1792,7 +1791,7 @@ function buildCapabilities(config: ServerConfig): Capabilities {
     mcp: { read: true, write: writeEnabled },
     commands: { read: true, write: writeEnabled },
     config: { read: true, write: writeEnabled },
-    engine: { rollover: config.engineRollover === true },
+    engine: { rollover: enginePoolForConfig(config) !== null },
 
     approvals: { mode: config.approval.mode, timeoutMs: config.approval.timeoutMs },
     sandbox: { enabled: sandboxEnabled, backend: sandboxBackend },
@@ -4120,10 +4119,10 @@ async function engineHasActiveSessions(config: ServerConfig, workspace: Workspac
 /**
  * Bring the engine onto current config.
  *
- * With engine rollover enabled the pool decides: an idle engine still reloads
- * in place, a busy one rolls over to a standby so live runs are not aborted.
- * Disabled (the default), this is the in-place dispose and callers keep their
- * own defer-while-busy handling.
+ * Managed engines always reload through the rollover pool: an idle engine
+ * still reloads in place, a busy one rolls over to a standby so live runs are
+ * not aborted. Attached engines have no pool, so this falls back to the
+ * in-place dispose and callers keep their own defer-while-busy handling.
  */
 async function reloadOpencodeEngine(
   config: ServerConfig,
@@ -4131,9 +4130,7 @@ async function reloadOpencodeEngine(
   serverState?: EngineMcpServerState,
   options?: { awaitPostRefreshSync?: boolean; forceStandby?: boolean },
 ): Promise<void> {
-  const pool = options?.forceStandby
-    ? managedEnginePoolForConfig(config)
-    : enginePoolForConfig(config);
+  const pool = enginePoolForConfig(config);
   if (pool) {
     await pool.requestRollover({
       reason: "engine_reload",
@@ -4484,7 +4481,7 @@ async function postMcpEntryWithRetry(
         body: JSON.stringify({ name, config: mcpConfig }),
         signal: AbortSignal.timeout(15_000),
       });
-      managedEnginePoolForConfig(config)?.reportRequestSuccess(url.origin);
+      enginePoolForConfig(config)?.reportRequestSuccess(url.origin);
       if (response.ok) {
         // OpenCode's dynamic registration endpoint historically treats every
         // 2xx response as accepted delivery and Cloud readiness verifies the
@@ -4509,7 +4506,7 @@ async function postMcpEntryWithRetry(
       };
       if (response.status < 500) return { name, status: "failed", source: "transport_failure", errorSummary: null, failure };
     } catch (error) {
-      managedEnginePoolForConfig(config)?.reportRequestFailure(url.origin, error, workspace);
+      enginePoolForConfig(config)?.reportRequestFailure(url.origin, error, workspace);
       failure = {
         name,
         registrationStatus: "failed",
