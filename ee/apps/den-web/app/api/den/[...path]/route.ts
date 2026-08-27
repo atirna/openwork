@@ -2,6 +2,7 @@ import { NextRequest } from "next/server";
 import { redirectToDenApi } from "../../_lib/den-api-redirect";
 
 export const dynamic = "force-dynamic";
+export const maxDuration = 60;
 
 async function redirect(request: NextRequest, segments: string[] = []) {
   void segments;

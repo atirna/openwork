@@ -60,6 +60,7 @@ import {
 import {
   commitRouteWorkspaceSelection,
   createRouteRefreshLifecycle,
+  mapRouteWorkspaceLoads,
   routeWorkspaceSelectionCommitter,
 } from "@/react-app/shell/route-refresh-control";
 import { createConnectionsStore, useConnectionsStoreSnapshot } from "@/react-app/domains/connections/store";
@@ -1490,8 +1491,9 @@ function SettingsRouteContent(props: SettingsSurfaceProps = {}) {
         await routeWorkspaceSelectionCommitter.settled();
         if (!attempt.isCurrent()) return;
       }
-      const sessionEntries = await Promise.all(
-        nextWorkspaces.map(async (workspace) => {
+      const sessionEntries = await mapRouteWorkspaceLoads(
+        nextWorkspaces,
+        async (workspace) => {
           const endpoint = routeWorkspaceServerClientResolver(workspace);
           if (!endpoint) {
             return { workspaceId: workspace.id, sessions: [], error: null as string | null };
@@ -1534,7 +1536,7 @@ function SettingsRouteContent(props: SettingsSurfaceProps = {}) {
               connectionState: null,
             };
           }
-        }),
+        },
       );
       if (!attempt.isCurrent()) return;
 
@@ -2863,6 +2865,7 @@ function SettingsRouteContent(props: SettingsSurfaceProps = {}) {
           mcpAuthNeedsReload: connectionsSnapshot.mcpAuthNeedsReload,
         }}
         onCloseMcpAuthModal={() => connectionsStore.closeMcpAuthModal()}
+        onMcpAuthenticated={(name) => connectionsStore.recordMcpAuthenticated(name)}
         onCompleteMcpAuthModal={() => connectionsStore.completeMcpAuthModal()}
       />
       <ModelPickerModal

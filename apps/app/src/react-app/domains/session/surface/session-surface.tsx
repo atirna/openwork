@@ -1,5 +1,5 @@
 /** @jsxImportSource react */
-import { useCallback, useEffect, useEffectEvent, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useEffectEvent, useLayoutEffect, useMemo, useRef, useState } from "react";
 import type { UIMessage } from "ai";
 import { useQuery } from "@tanstack/react-query";
 import type { SessionStatus } from "@opencode-ai/sdk/v2/client";
@@ -14,6 +14,7 @@ import type { ComposerSettingsSection } from "@/react-app/domains/settings/libra
 import { type CloudImportedPlugin } from "@/app/cloud/import-state";
 import { createDenClient, readDenSettings } from "@/app/lib/den";
 import { denSettingsChangedEvent } from "@/app/lib/den-session-events";
+import { useSessionDraftState } from "@/react-app/domains/session/sync/draft-store";
 import type {
   OpenworkServerClient,
   OpenworkSessionSnapshot,
@@ -77,6 +78,8 @@ import {
 } from "@/react-app/domains/session/sync/session-sync";
 import { resolveForkBoundaryId } from "@/react-app/domains/session/sync/transcript-reconcile";
 import {
+  claimComposerSessionDraftScope,
+  composerDraftNeedsHydration,
   getComposerAttachments,
   getComposerDraft,
   getComposerHistory,
@@ -84,6 +87,8 @@ import {
   getComposerPasteParts,
   getComposerQueuedDrafts,
   getComposerRevertMessageId,
+  getComposerSessionDraftScope,
+  persistableComposerDraftText,
   useComposerStateStore,
 } from "./composer-state-store";
 import { MessageList } from "@/components/chat/message-list";
@@ -400,6 +405,7 @@ export type SessionSurfaceProps = {
   workspaceId: string;
   workspaceRoot: string;
   sessionId: string;
+  draftScope: string | null;
   isControlTarget: boolean;
   opencodeBaseUrl: string;
   openworkToken: string;
@@ -798,6 +804,45 @@ export function SessionSurface(props: SessionSurfaceProps) {
   const setComposerMentions = useComposerStateStore((state) => state.setMentions);
   const setComposerPasteParts = useComposerStateStore((state) => state.setPasteParts);
   const clearComposerSession = useComposerStateStore((state) => state.clearSession);
+  const {
+    scopeKey: persistedDraftKey,
+    snapshot: persistedDraftSnapshot,
+    save: persistDraft,
+  } = useSessionDraftState(props.draftScope, props.workspaceId, props.sessionId);
+  const appliedPersistedDraftRef = useRef<{
+    scopeKey: string;
+    snapshot: typeof persistedDraftSnapshot;
+  } | null>(null);
+
+  // Layout timing is intentional: an account/org boundary must replace the
+  // previous scope's in-memory Zustand draft before the browser can paint it.
+  useLayoutEffect(() => {
+    const applied = appliedPersistedDraftRef.current;
+    if (applied?.scopeKey === persistedDraftKey && applied.snapshot === persistedDraftSnapshot) return;
+
+    const claimedScopeKey = getComposerSessionDraftScope(props.sessionId);
+    claimComposerSessionDraftScope(props.sessionId, persistedDraftKey);
+    appliedPersistedDraftRef.current = {
+      scopeKey: persistedDraftKey,
+      snapshot: persistedDraftSnapshot,
+    };
+
+    const currentState = useComposerStateStore.getState();
+    const currentDraft = getComposerDraft(currentState, props.sessionId);
+    const nextDraft = persistedDraftSnapshot?.text ?? "";
+    if (!composerDraftNeedsHydration({
+      claimedScopeKey,
+      nextScopeKey: persistedDraftKey,
+      currentText: currentDraft,
+      storedText: nextDraft,
+    })) return;
+
+    for (const attachment of getComposerAttachments(currentState, props.sessionId)) {
+      revokeAttachmentPreview(attachment);
+    }
+    clearComposerSession(props.sessionId);
+    if (nextDraft) replaceComposerDraft(props.sessionId, nextDraft);
+  }, [clearComposerSession, persistedDraftKey, persistedDraftSnapshot, props.sessionId, replaceComposerDraft]);
   const inputHistory = useComposerStateStore((state) => getComposerHistory(state, props.sessionId));
   const appendComposerHistory = useComposerStateStore((state) => state.appendHistory);
   // Queued follow-up drafts live in the shared composer store keyed by session
@@ -1669,8 +1714,10 @@ export function SessionSurface(props: SessionSurfaceProps) {
   }, [props.cloudMcpSubmissionState.status]);
 
   useEffect(() => {
-    props.onDraftChange(buildDraft(draft, attachments));
-  }, [attachments, buildDraft, draft, props.onDraftChange]);
+    const nextDraft = buildDraft(draft, attachments);
+    persistDraft({ text: persistableComposerDraftText(nextDraft.text), mode: nextDraft.mode });
+    props.onDraftChange(nextDraft);
+  }, [attachments, buildDraft, draft, persistDraft, props.onDraftChange]);
 
   const handleAttachFiles = useCallback((files: File[]) => {
     if (!props.attachmentsEnabled) {

@@ -195,8 +195,15 @@ import {
   publishInspectorSlice,
   recordInspectorEvent,
 } from "../../app/lib/app-inspector";
-import { saveSessionDraft } from "@/react-app/domains/session/sync/draft-store";
-import { useComposerStateStore } from "@/react-app/domains/session/surface/composer-state-store";
+import {
+  resolveSessionDraftScope,
+  saveSessionDraft,
+  sessionDraftScopeKey,
+} from "@/react-app/domains/session/sync/draft-store";
+import {
+  claimComposerSessionDraftScope,
+  useComposerStateStore,
+} from "@/react-app/domains/session/surface/composer-state-store";
 import { useControlAction, type OpenworkControlAction } from "./control/control-provider";
 import { useReactRenderWatchdog } from "./react-render-watchdog";
 import { useBootOverlayVisible } from "./boot-state";
@@ -520,6 +527,10 @@ export function SessionRoute() {
   const automationsEnabled = isDesktopRuntime() && automationDeploymentEnabled;
   const automationsRouteActive = automationsEnabled && automationsRouteRequested;
   const denSettings = readDenSettings();
+  const sessionDraftScope = resolveSessionDraftScope({
+    hasCloudCredential: Boolean(denSettings.authToken?.trim()),
+    verifiedIdentity: denAuth.verifiedIdentity,
+  });
   const [automationsSupported, setAutomationsSupported] = useState(false);
   const [automationsNeedAttention, setAutomationsNeedAttention] = useState(false);
   useEffect(() => {
@@ -1359,6 +1370,7 @@ export function SessionRoute() {
     // local server with the local `rem_*` id.
     return {
       workspaceRoot: selectedWorkspaceRoot,
+      draftScope: sessionDraftScope,
       developerMode: false,
       modelLabel,
       onModelClick: (sessionId?: string) => {
@@ -1655,6 +1667,7 @@ export function SessionRoute() {
     providerConnectedIds,
     selectedAgent,
     selectedSessionId,
+    sessionDraftScope,
     selectedModelUnavailable,
     selectedWorkspace,
     selectedWorkspaceId,
@@ -2934,7 +2947,11 @@ export function SessionRoute() {
           if (firstTaskPrompt) {
             // Attachment chips only survive in-memory (File objects), so the
             // persisted fallback draft drops their tokens.
-            saveSessionDraft(targetWorkspaceId, session.id, { text: firstTaskPrompt.replace(/\[attachment [^\]]+\]/g, "").trim(), mode: "prompt" });
+            saveSessionDraft(sessionDraftScope, targetWorkspaceId, session.id, { text: firstTaskPrompt.replace(/\[attachment [^\]]+\]/g, "").trim(), mode: "prompt" });
+            claimComposerSessionDraftScope(
+              session.id,
+              sessionDraftScopeKey(sessionDraftScope, targetWorkspaceId, session.id),
+            );
             // The composer reads its draft from the composer state store, not
             // the persisted draft store — seed both so the prompt shows up.
             useComposerStateStore.getState().setDraft(session.id, firstTaskPrompt);
@@ -3274,7 +3291,11 @@ export function SessionRoute() {
                 const firstTaskAttachments = attachments ?? [];
                 // Attachment chips only survive in-memory (File objects), so the
                 // persisted fallback draft drops their tokens.
-                saveSessionDraft(workspaceId, session.id, { text: firstTaskPrompt.replace(/\[attachment [^\]]+\]/g, "").trim(), mode: "prompt" });
+                saveSessionDraft(sessionDraftScope, workspaceId, session.id, { text: firstTaskPrompt.replace(/\[attachment [^\]]+\]/g, "").trim(), mode: "prompt" });
+                claimComposerSessionDraftScope(
+                  session.id,
+                  sessionDraftScopeKey(sessionDraftScope, workspaceId, session.id),
+                );
                 // The composer reads its draft from the composer state store,
                 // not the persisted draft store — seed both.
                 useComposerStateStore.getState().setDraft(session.id, firstTaskPrompt);

@@ -117,6 +117,7 @@ export function shouldRetryDenAuthOnSignal(input: {
 export type DenAuthStore = {
   status: DenAuthStatus;
   user: DenUser | null;
+  verifiedIdentity: { principalId: string; organizationId: string } | null;
   error: string | null;
   isSignedIn: boolean;
   refresh: () => Promise<void>;
@@ -187,6 +188,11 @@ function pendingServerSwitchForDeepLink(input: {
 export function DenAuthProvider({ children }: DenAuthProviderProps) {
   const [status, setStatus] = useState<DenAuthStatus>("checking");
   const [user, setUser] = useState<DenUser | null>(null);
+  const [verifiedIdentity, setVerifiedIdentity] = useState<{
+    principalId: string;
+    organizationId: string;
+  } | null>(null);
+  const verifiedCredentialRef = useRef<{ token: string; organizationId: string } | null>(null);
   const [error, setError] = useState<string | null>(null);
   // Monotonic token so stale async refreshes can't clobber a newer result.
   const refreshTokenRef = useRef(0);
@@ -219,9 +225,21 @@ export function DenAuthProvider({ children }: DenAuthProviderProps) {
     const currentRun = ++refreshTokenRef.current;
     const settings = readDenSettings();
     const token = settings.authToken?.trim() ?? "";
+    const organizationId = settings.activeOrgId?.trim() ?? "";
+    const verifiedCredential = verifiedCredentialRef.current;
+
+    if (
+      !verifiedCredential
+      || verifiedCredential.token !== token
+      || verifiedCredential.organizationId !== organizationId
+    ) {
+      verifiedCredentialRef.current = null;
+      setVerifiedIdentity(null);
+    }
 
     if (!token) {
       setUser(null);
+      setVerifiedIdentity(null);
       setError(null);
       lastSignalRetryAtRef.current = null;
       updateStatus("signed_out");
@@ -258,6 +276,17 @@ export function DenAuthProvider({ children }: DenAuthProviderProps) {
 
       if (currentRun !== refreshTokenRef.current) return;
 
+      const confirmedSettings = readDenSettings();
+      const confirmedToken = confirmedSettings.authToken?.trim() ?? "";
+      const confirmedOrganizationId = confirmedSettings.activeOrgId?.trim() ?? "";
+      const principalId = nextUser.id.trim();
+      if (confirmedToken === token && principalId && confirmedOrganizationId) {
+        verifiedCredentialRef.current = { token, organizationId: confirmedOrganizationId };
+        setVerifiedIdentity({ principalId, organizationId: confirmedOrganizationId });
+      } else {
+        verifiedCredentialRef.current = null;
+        setVerifiedIdentity(null);
+      }
       setUser(nextUser);
       setError(null);
       lastSignalRetryAtRef.current = null;
@@ -270,6 +299,8 @@ export function DenAuthProvider({ children }: DenAuthProviderProps) {
       if (failureStatus === "signed_out") {
         clearDenSession();
         setUser(null);
+        verifiedCredentialRef.current = null;
+        setVerifiedIdentity(null);
         lastSignalRetryAtRef.current = null;
         clearDesktopSentrySession();
       }
@@ -293,8 +324,10 @@ export function DenAuthProvider({ children }: DenAuthProviderProps) {
     };
 
     window.addEventListener(denSessionUpdatedEvent, handleSessionUpdated);
+    window.addEventListener(denSettingsChangedEvent, handleSessionUpdated);
     return () => {
       window.removeEventListener(denSessionUpdatedEvent, handleSessionUpdated);
+      window.removeEventListener(denSettingsChangedEvent, handleSessionUpdated);
     };
   }, [refresh]);
 
@@ -507,11 +540,12 @@ export function DenAuthProvider({ children }: DenAuthProviderProps) {
     () => ({
       status,
       user,
+      verifiedIdentity,
       error,
       isSignedIn: hasRetainedDenSession(status),
       refresh,
     }),
-    [error, refresh, status, user],
+    [error, refresh, status, user, verifiedIdentity],
   );
 
   return (

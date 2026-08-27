@@ -50,6 +50,7 @@ import { resolveOpenworkConnection } from "./openwork-connection";
 import {
   commitRouteWorkspaceSelection,
   createRouteRefreshLifecycle,
+  mapRouteWorkspaceLoads,
   planRouteConnectionGap,
   planRouteWorkspaceLoads,
   routeWorkspaceSelectionCommitter,
@@ -57,7 +58,6 @@ import {
 import {
   classifyRouteSessionReadError,
   describeRouteError,
-  isTransientStartupError,
   mapDesktopWorkspace,
   refreshRouteWorkspaceListState,
   stabilizeRouteWorkspaceOrder,
@@ -398,7 +398,7 @@ export function useWorkspaceRouteState(input: UseWorkspaceRouteStateInput) {
           // or run out of attempts — the sidebar keeps its "loading" state
           // in the meantime instead of flashing "error" next to the
           // workspace name.
-          if (attempt + 1 < MAX_ATTEMPTS && isTransientStartupError(message)) {
+          if (attempt + 1 < MAX_ATTEMPTS && classifyRouteSessionReadError(error) === "retryable") {
             if (backgroundSessionLoadInFlight.current.get(workspace.id) === requestStartedAt) {
               backgroundSessionLoadInFlight.current.delete(workspace.id);
             }
@@ -431,7 +431,7 @@ export function useWorkspaceRouteState(input: UseWorkspaceRouteStateInput) {
         }
       };
 
-      await Promise.all(workspaces.map((workspace) => fetchOnce(workspace, 0)));
+      await mapRouteWorkspaceLoads(workspaces, (workspace) => fetchOnce(workspace, 0));
     },
     [endpointForWorkspace, mergeFetchedSessionsWithPending],
   );

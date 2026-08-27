@@ -138,6 +138,18 @@ export async function commitRouteWorkspaceSelection(input: {
   await input.activateWorkspace(workspaceId);
 }
 
+export async function mapRouteWorkspaceLoads<T, R>(
+  workspaces: readonly T[],
+  load: (workspace: T) => Promise<R>,
+): Promise<R[]> {
+  const batchSize = 4;
+  const results: R[] = [];
+  for (let offset = 0; offset < workspaces.length; offset += batchSize) {
+    results.push(...await Promise.all(workspaces.slice(offset, offset + batchSize).map(load)));
+  }
+  return results;
+}
+
 /**
  * Every workspace with an unloaded session index gets a background load, with
  * the routed workspace first so the visible pane fills fastest. Loading only

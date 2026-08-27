@@ -24,6 +24,7 @@ import {
 } from "../../../app/lib/desktop";
 import { toSessionTransportDirectory } from "../../../app/lib/session-scope";
 import {
+  normalizeMcpSlug,
   parseMcpServersFromContent,
   removeMcpFromConfig,
   validateMcpServerName,
@@ -44,6 +45,11 @@ import { conflictsWithOpenworkConnect } from "./mcp-connection-boundary";
 
 import type { OpenworkServerStore } from "./openwork-server-store";
 import { attemptSilentMcpReauth } from "./mcp-silent-reauth";
+import {
+  createMcpStatusSynchronizer,
+  resolveObservedMcpStatus,
+  type McpStatusRefreshToken,
+} from "./mcp-status-synchronization";
 import {
   CLOUD_MCP_SERVER_NAME,
   readCloudMcpUserState,
@@ -124,6 +130,8 @@ export function createConnectionsStore(options: {
   let lastWorkspaceContextKey = "";
   let lastProjectDir = "";
   let snapshot: ConnectionsStoreSnapshot;
+  const mcpStatusSynchronizer = createMcpStatusSynchronizer();
+  const authStatusPolls = new Set<string>();
 
   let state: MutableState = {
     mcpServers: [],
@@ -242,10 +250,12 @@ export function createConnectionsStore(options: {
   };
 
   const filterConfiguredStatuses = (status: McpStatusMap, entries: McpServerEntry[]) => {
-    const configured = new Set(entries.map((entry) => entry.name));
-    return Object.fromEntries(
-      Object.entries(status).filter(([name]) => configured.has(name)),
-    ) as McpStatusMap;
+    const next: McpStatusMap = {};
+    for (const entry of entries) {
+      const resolved = resolveObservedMcpStatus(status, entry);
+      if (resolved && resolved.status !== "disconnected") next[entry.name] = resolved;
+    }
+    return next;
   };
 
   const readMcpConfigFile = async (scope: "project" | "global"): Promise<OpencodeConfigFile | null> => {
@@ -458,7 +468,11 @@ export function createConnectionsStore(options: {
    * transport — silently, never opening a browser or modal. Mirrors
    * syncCloudControlMcp, but for user-added connectors.
    */
-  async function healUnhealthyMcpEntries(servers: McpServerEntry[], statuses: McpStatusMap) {
+  async function healUnhealthyMcpEntries(
+    servers: McpServerEntry[],
+    statuses: McpStatusMap,
+    refreshToken: McpStatusRefreshToken,
+  ) {
     if (disposed || snapshot.mcpAuthModalOpen || snapshot.mcpConnectingName) return;
     const activeClient = options.client();
     const projectDir = options.projectDir().trim();
@@ -469,26 +483,22 @@ export function createConnectionsStore(options: {
       servers,
       statuses,
     }).catch(() => false);
-    if (!attempted || disposed) return;
-    try {
-      const status = unwrap(await activeClient.mcp.status({ directory: projectDir }));
-      setStateField(
-        "mcpStatuses",
-        filterConfiguredStatuses(status as McpStatusMap, snapshot.mcpServers),
-      );
-    } catch {
-      // Post-heal status refresh is best-effort; the next refresh picks it up.
-    }
+    if (!attempted || disposed || !mcpStatusSynchronizer.isCurrent(refreshToken)) return;
+    // Re-enter the ordered refresh path. A self-heal launched from an older
+    // snapshot must never publish its late status over a newer OAuth result.
+    await refreshMcpServers();
   }
 
   async function refreshMcpServers() {
     if (disposed) return;
 
+    const refreshToken = mcpStatusSynchronizer.beginRefresh(getWorkspaceContextKey());
+    const isCurrentRefresh = () => !disposed && mcpStatusSynchronizer.isCurrent(refreshToken);
     const projectDir = options.projectDir().trim();
     const isRemoteWorkspace = options.workspaceType() === "remote";
 
     try {
-      setStateField("mcpStatus", null);
+      if (isCurrentRefresh()) setStateField("mcpStatus", null);
       const serverResult = await listMcpFromOpenworkServer(projectDir);
       if (serverResult) {
         // Surface engine registration failures instead of leaving users
@@ -496,17 +506,23 @@ export function createConnectionsStore(options: {
         const failedNames = serverResult.engineSync?.status === "failed"
           ? serverResult.engineSync.failures.map((failure) => failure.name).join(", ")
           : "";
+        const projectedStatuses = mcpStatusSynchronizer.project(
+          refreshToken,
+          serverResult.nextStatuses,
+          serverResult.next,
+        );
+        if (!projectedStatuses) return;
         mutateState((current) => ({
           ...current,
           mcpServers: serverResult.next,
           mcpLastUpdatedAt: Date.now(),
-          mcpStatuses: serverResult.nextStatuses,
+          mcpStatuses: projectedStatuses,
           managedOAuthAvailable: serverResult.managedOAuthAvailable,
           mcpStatus: failedNames
             ? `Some MCPs could not be registered with the engine: ${failedNames}. They may appear disconnected — try reloading the engine.`
             : serverResult.next.length ? null : "No MCP servers configured yet.",
         }));
-        void healUnhealthyMcpEntries(serverResult.next, serverResult.nextStatuses);
+        void healUnhealthyMcpEntries(serverResult.next, projectedStatuses, refreshToken);
         return;
       }
     } catch (error) {
@@ -514,6 +530,7 @@ export function createConnectionsStore(options: {
         message: error instanceof Error ? error.message : String(error),
       });
       const serverTarget = await resolveMcpOpenworkTarget("read").catch(() => null);
+      if (!isCurrentRefresh()) return;
       if (isRemoteWorkspace || serverTarget?.hasOpenworkTarget) {
         mutateState((current) => ({
           ...current,
@@ -526,6 +543,7 @@ export function createConnectionsStore(options: {
     }
 
     if (isRemoteWorkspace) {
+      if (!isCurrentRefresh()) return;
       mutateState((current) => ({
         ...current,
         mcpStatus: "OpenWork server unavailable. MCP config is read-only.",
@@ -536,6 +554,7 @@ export function createConnectionsStore(options: {
     }
 
     if (!isDesktopRuntime()) {
+      if (!isCurrentRefresh()) return;
       mutateState((current) => ({
         ...current,
         mcpStatus: "MCP configuration is only available for local workspaces.",
@@ -546,6 +565,7 @@ export function createConnectionsStore(options: {
     }
 
     if (!projectDir) {
+      if (!isCurrentRefresh()) return;
       mutateState((current) => ({
         ...current,
         mcpStatus: "Pick a workspace folder to load MCP servers.",
@@ -556,7 +576,7 @@ export function createConnectionsStore(options: {
     }
 
     try {
-      setStateField("mcpStatus", null);
+      if (isCurrentRefresh()) setStateField("mcpStatus", null);
       recordPerfLog(options.developerMode(), "mcp.refresh", "desktop-project-fallback", {
         projectDir,
       });
@@ -597,6 +617,7 @@ export function createConnectionsStore(options: {
       });
 
       if (!globalConfig.exists && !projectConfig.exists && runtimeServers.length === 0) {
+        if (!isCurrentRefresh()) return;
         mutateState((current) => ({
           ...current,
           mcpServers: [],
@@ -617,15 +638,18 @@ export function createConnectionsStore(options: {
         }
       }
 
+      const projectedStatuses = mcpStatusSynchronizer.project(refreshToken, nextStatuses, next);
+      if (!projectedStatuses) return;
       mutateState((current) => ({
         ...current,
         mcpServers: next,
         mcpLastUpdatedAt: Date.now(),
-        mcpStatuses: nextStatuses,
+        mcpStatuses: projectedStatuses,
         mcpStatus: next.length ? null : "No MCP servers configured yet.",
       }));
-      void healUnhealthyMcpEntries(next, nextStatuses);
+      void healUnhealthyMcpEntries(next, projectedStatuses, refreshToken);
     } catch (error) {
+      if (!isCurrentRefresh()) return;
       mutateState((current) => ({
         ...current,
         mcpServers: [],
@@ -917,7 +941,6 @@ export function createConnectionsStore(options: {
         // `/opencode` route it can resolve to an internal `local_*` workspace
         // id that the OpenWork server does not expose, producing a confusing
         // `workspace_not_found` after the config write already succeeded.
-        setStateField("mcpStatuses", filterConfiguredStatuses(snapshot.mcpStatuses, snapshot.mcpServers));
       } else {
         if (!activeClient || !resolvedProjectDir) {
           throw new Error(t("mcp.connect_server_first"));
@@ -938,15 +961,13 @@ export function createConnectionsStore(options: {
                 enabled: true,
               };
 
-        const status = unwrap(
+        unwrap(
           await activeClient.mcp.add({
             directory: resolvedProjectDir,
             name: slug,
             config: mcpAddConfig,
           }),
         );
-
-        setStateField("mcpStatuses", status as McpStatusMap);
       }
       options.markReloadRequired?.("mcp", { type: "mcp", name: slug, action });
       await refreshMcpServers();
@@ -1174,15 +1195,6 @@ export function createConnectionsStore(options: {
         await activeClient.mcp.auth.remove({ directory: resolvedProjectDir, name: safeName });
       }
 
-      try {
-        if (activeClient && resolvedProjectDir) {
-          const status = unwrap(await activeClient.mcp.status({ directory: resolvedProjectDir }));
-          setStateField("mcpStatuses", status as McpStatusMap);
-        }
-      } catch {
-        // ignore
-      }
-
       await refreshMcpServers();
       setStateField("mcpStatus", t("mcp.logout_success").replace("{server}", safeName));
     } catch (error) {
@@ -1313,6 +1325,40 @@ export function createConnectionsStore(options: {
     }));
   }
 
+  function recordMcpAuthenticated(name: string) {
+    const workspaceContextKey = getWorkspaceContextKey();
+    mcpStatusSynchronizer.recordAuthenticated(workspaceContextKey, name);
+    const normalizedName = normalizeMcpSlug(name);
+    const configuredName = state.mcpServers.find((entry) => (
+      normalizeMcpSlug(entry.id ?? entry.name) === normalizedName
+      || normalizeMcpSlug(entry.name) === normalizedName
+    ))?.name ?? name;
+    mutateState((current) => ({
+      ...current,
+      mcpStatuses: {
+        ...current.mcpStatuses,
+        [configuredName]: { status: "connected" },
+      },
+    }));
+
+    const pollKey = `${workspaceContextKey}\n${normalizedName}`;
+    if (authStatusPolls.has(pollKey)) return;
+    authStatusPolls.add(pollKey);
+    void (async () => {
+      const delays = [0, 250, 500, 1_000, 2_000, 4_000];
+      try {
+        for (const delay of delays) {
+          if (disposed || !mcpStatusSynchronizer.isPending(workspaceContextKey, name)) return;
+          if (delay > 0) await new Promise((resolve) => setTimeout(resolve, delay));
+          if (disposed) return;
+          await refreshMcpServers();
+        }
+      } finally {
+        authStatusPolls.delete(pollKey);
+      }
+    })();
+  }
+
   async function completeMcpAuthModal() {
     closeMcpAuthModal();
     await refreshMcpServers();
@@ -1411,6 +1457,7 @@ export function createConnectionsStore(options: {
       return snapshot.mcpAuthNeedsReload;
     },
     closeMcpAuthModal,
+    recordMcpAuthenticated,
     completeMcpAuthModal,
   };
 }

@@ -31,10 +31,25 @@ describe("agent instruction compose primitives", () => {
     ]);
   });
 
-  test("composeAgentInstructions returns ordered bodies only", () => {
-    expect(composeAgentInstructions([
+  test("composeAgentInstructions combines section groups once and returns ordered bodies", () => {
+    let observedBodyReads = 0;
+    const observedSection = {
+      id: "observed",
+      get body() {
+        observedBodyReads += 1;
+        return "three";
+      },
+    };
+
+    expect(composeAgentInstructions(
       createInstructionSection("a", "one"),
-      createInstructionSection("b", "two"),
-    ])).toEqual(["one", "two"]);
+      [
+        createInstructionSection("a", "ignored duplicate"),
+        createInstructionSection("empty", "  "),
+        createInstructionSection("b", "two"),
+      ],
+      observedSection,
+    )).toEqual(["one", "two", "three"]);
+    expect(observedBodyReads).toBe(1);
   });
 });

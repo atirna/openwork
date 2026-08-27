@@ -859,7 +859,7 @@ export async function ensureKindDenReady(options: KubeLayerOptions = {}): Promis
 async function portForwardHealthy(kind: "api" | "web"): Promise<boolean> {
   return kind === "api"
     ? await httpOk(`${DEN_API_URL}/health`)
-    : await httpOk(`${DEN_WEB_URL}/api/den/health`);
+    : await httpOk(`${DEN_WEB_URL}/api/ready`);
 }
 
 async function recordedLivePid(runtime: KubeRuntime, stateName: string): Promise<number | null> {

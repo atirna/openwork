@@ -23,6 +23,7 @@
           "start-here/get-started",
           "start-here/downloads",
           "start-here/pricing-and-licensing",
+          "start-here/stewardship",
           "start-here/migrate-from-claude-cowork",
           {
             "group": "Connect your stack",
@@ -72,7 +73,8 @@
           {
             "group": "Overview",
             "pages": [
-              "start-here/self-host"
+              "start-here/self-host",
+              "self-host/evaluate-with-docker-compose"
             ]
           },
           {

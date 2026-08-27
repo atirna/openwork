@@ -167,12 +167,14 @@ test("endpoint handles return credentials and stop only their recorded port-forw
     ? { stdout: "", stderr: "", code: 1 }
     : success());
   const previousFetch = globalThis.fetch;
+  const fetchedUrls: string[] = [];
   const fakeFetch: typeof fetch = async (input) => {
     const url = typeof input === "string"
       ? input
       : input instanceof URL
         ? input.href
         : input.url;
+    fetchedUrls.push(url);
     if (url.endsWith("/api/auth/sign-in/email")) {
       return new Response(JSON.stringify({ token: "kind-owner-token" }), {
         status: 200,
@@ -201,6 +203,8 @@ test("endpoint handles return credentials and stop only their recorded port-forw
     assert.equal(endpoints.webUrl, "http://127.0.0.1:3005");
     assert.equal(endpoints.token, "kind-owner-token");
     assert.equal(endpoints.adminEmail, "alex@acme.test");
+    assert(fetchedUrls.includes("http://127.0.0.1:3005/api/ready"));
+    assert(!fetchedUrls.includes("http://127.0.0.1:3005/api/den/health"));
     assert.deepEqual(spawned.map(({ command, pid }) => ({ command, pid })), [
       { command: "kubectl", pid: 987_651 },
       { command: "kubectl", pid: 987_652 },

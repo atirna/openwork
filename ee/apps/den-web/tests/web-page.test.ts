@@ -8,6 +8,7 @@ import { GET } from "../app/api/runtime-config/route";
 
 const originalEnv = {
   DEN_API_BASE: process.env.DEN_API_BASE,
+  DEN_API_PUBLIC_URL: process.env.DEN_API_PUBLIC_URL,
   DEN_BASE_URL: process.env.DEN_BASE_URL,
   DEN_WEB_OPENWORK_WEB_URL: process.env.DEN_WEB_OPENWORK_WEB_URL,
 };
@@ -32,6 +33,7 @@ function readStringProperty(value: unknown, key: string) {
 
 afterEach(() => {
   restoreEnvValue("DEN_API_BASE");
+  restoreEnvValue("DEN_API_PUBLIC_URL");
   restoreEnvValue("DEN_BASE_URL");
   restoreEnvValue("DEN_WEB_OPENWORK_WEB_URL");
 });
@@ -77,15 +79,18 @@ describe("Web dashboard page", () => {
     expect(readStringProperty(overridePayload, "openworkWebUrl")).toBe("https://self-hosted.example.test");
   });
 
-  test("runtime config exposes the Den API URL with DEN_API_BASE override precedence", async () => {
-    delete process.env.DEN_API_BASE;
+  test("runtime config exposes the public Den API URL without leaking the internal API base", async () => {
     process.env.DEN_BASE_URL = "https://den.example.test";
+    process.env.DEN_API_PUBLIC_URL = "https://public-api.example.test";
+    process.env.DEN_API_BASE = "http://openwork-ee-den-api:8788";
 
+    const publicPayload: unknown = await (await GET()).json();
+    expect(readStringProperty(publicPayload, "denApiUrl")).toBe("https://public-api.example.test");
+    expect(JSON.stringify(publicPayload)).not.toContain("openwork-ee-den-api");
+
+    delete process.env.DEN_API_PUBLIC_URL;
     const derivedPayload: unknown = await (await GET()).json();
     expect(readStringProperty(derivedPayload, "denApiUrl")).toBe("https://api.den.example.test");
-
-    process.env.DEN_API_BASE = "https://api.override.example.test";
-    const overridePayload: unknown = await (await GET()).json();
-    expect(readStringProperty(overridePayload, "denApiUrl")).toBe("https://api.override.example.test");
+    expect(JSON.stringify(derivedPayload)).not.toContain("openwork-ee-den-api");
   });
 });

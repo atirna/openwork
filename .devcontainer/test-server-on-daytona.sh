@@ -135,7 +135,7 @@ if [ -n "${OPENWORK_DEN_URLS_FILE:-}" ]; then
 fi
 
 echo "==> Checking out $REF..."
-daytona exec "$SANDBOX" -- "bash -lc 'set -euo pipefail; cd /workspace; REF=\"$REF\"; FORCE_INSTALL=\"$FORCE_INSTALL\"; if git fetch origin \"\$REF\"; then git checkout --detach FETCH_HEAD; else git fetch origin dev --depth 50 || true; git checkout \"\$REF\"; fi; git rev-parse --short HEAD; if [ \"\$FORCE_INSTALL\" = 1 ]; then rm -f .openwork-daytona/pnpm-lock.sha256 .openwork-daytona/den-web-build.tree .openwork-daytona/den-api-assets.tree; fi'"
+daytona exec "$SANDBOX" -- "bash -lc 'set -euo pipefail; cd /workspace; REF=\"$REF\"; FORCE_INSTALL=\"$FORCE_INSTALL\"; git reset --hard HEAD; if git fetch origin \"\$REF\"; then git checkout --detach FETCH_HEAD; else git fetch origin dev --depth 50 || true; git checkout \"\$REF\"; fi; git rev-parse --short HEAD; if [ \"\$FORCE_INSTALL\" = 1 ]; then rm -f .openwork-daytona/pnpm-lock.sha256 .openwork-daytona/den-web-build.tree .openwork-daytona/den-api-assets.tree; fi'"
 
 echo "==> Uploading server start script..."
 START_SCRIPT_B64="$(base64 < "$ROOT_DIR/.devcontainer/start-daytona-server.sh" | tr -d '\n')"

@@ -82,7 +82,7 @@ OpenWork Den is the control plane for managing OpenWork across a team or organiz
 This repository uses a directory-split license, similar to GitLab:
 
 - **Everything outside `ee/` is MIT** — the desktop app and core platform are open source, free for any use.
-- **Everything under `ee/` (OpenWork Den — the org control plane) is under the [OpenWork EE License](ee/LICENSE)**, a source-available license. The code is public so you can audit exactly what you deploy. Production use requires an [OpenWork subscription](https://openworklabs.com/pricing), except that it is **free for organizations with up to 5 users**, **free to evaluate for 90 days at any size**, and always free for development and testing. Each `ee/` release additionally converts to MIT two years after publication.
+- **Everything under `ee/` (OpenWork Den — the org control plane) is under the [OpenWork EE License](ee/LICENSE)**, a source-available license. The code is public so you can audit exactly what you deploy. Production use requires an [OpenWork subscription](https://openworklabs.com/pricing), except that it is **free for organizations with up to 5 users**, **free to evaluate for 30 days at any size**, and always free for development and testing. Each `ee/` release additionally converts to MIT two years after publication.
 
 Versions released before this license was adopted remain under their original license (FSL-1.1-MIT). See [pricing](https://openworklabs.com/pricing) and the [subscription terms](https://openworklabs.com/terms/subscription).
 

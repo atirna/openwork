@@ -7,6 +7,7 @@ import {
   refreshRouteWorkspaceListState,
   stabilizeRouteWorkspaceOrder,
 } from "../src/react-app/shell/route-workspaces";
+import { mapRouteWorkspaceLoads } from "../src/react-app/shell/route-refresh-control";
 import {
   mergeWorkspaceRouteSession,
   preserveWorkspaceRouteSession,
@@ -126,6 +127,36 @@ describe("workspace route session read errors", () => {
       wait: async () => undefined,
     })).rejects.toMatchObject({ status: 403 });
     expect(attempts).toBe(1);
+  });
+});
+
+describe("workspace route session load budget", () => {
+  test("loads workspaces in bounded batches while preserving order", async () => {
+    let active = 0;
+    let peak = 0;
+    const release: Array<() => void> = [];
+    const workspaces = Array.from({ length: 10 }, (_, index) => index);
+
+    const resultPromise = mapRouteWorkspaceLoads(workspaces, async (workspace) => {
+      active += 1;
+      peak = Math.max(peak, active);
+      await new Promise<void>((resolve) => release.push(resolve));
+      active -= 1;
+      return `workspace-${workspace}`;
+    });
+
+    await Bun.sleep(0);
+    expect(active).toBe(4);
+    release.splice(0).forEach((resolve) => resolve());
+    await Bun.sleep(0);
+    expect(active).toBe(4);
+    release.splice(0).forEach((resolve) => resolve());
+    await Bun.sleep(0);
+    expect(active).toBe(2);
+    release.splice(0).forEach((resolve) => resolve());
+
+    expect(await resultPromise).toEqual(workspaces.map((workspace) => `workspace-${workspace}`));
+    expect(peak).toBe(4);
   });
 });
 

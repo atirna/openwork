@@ -54,6 +54,31 @@ const EMPTY_PASTE_PARTS: ComposerPastePart[] = [];
 const EMPTY_HISTORY: string[] = [];
 const EMPTY_QUEUED_DRAFTS: QueuedComposerItem[] = [];
 const HISTORY_LIMIT = 50;
+const composerSessionDraftScopes = new Map<string, string>();
+
+export function claimComposerSessionDraftScope(sessionId: string, scopeKey: string) {
+  const session = sessionId.trim();
+  if (!session) return;
+  composerSessionDraftScopes.set(session, scopeKey);
+}
+
+export function getComposerSessionDraftScope(sessionId: string) {
+  return composerSessionDraftScopes.get(sessionId.trim()) ?? null;
+}
+
+export function persistableComposerDraftText(text: string) {
+  return text.replace(/\[attachment [^\]]+\]/g, "");
+}
+
+export function composerDraftNeedsHydration(input: {
+  claimedScopeKey: string | null;
+  nextScopeKey: string;
+  currentText: string;
+  storedText: string;
+}) {
+  return input.claimedScopeKey !== input.nextScopeKey
+    || persistableComposerDraftText(input.currentText) !== input.storedText;
+}
 
 function createEmptyComposerSession(): ComposerSessionState {
   return {

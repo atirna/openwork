@@ -5,6 +5,7 @@
  * combine — merge sections in order, one id wins (first non-empty)
  * delete  — drop a section by id
  * expand  — replace a section body with derived text when present
+ * compose — combine sections and return their prompt bodies
  *
  * Sections are the unit of overlap control: routing/tools/skills/session each
  * own one id so transforms stop stacking contradictory brochure text.
@@ -15,12 +16,14 @@ export type AgentInstructionSection = {
   body: string;
 };
 
+type AgentInstructionSectionGroup = AgentInstructionSection | AgentInstructionSection[] | null | undefined;
+
 export function createInstructionSection(id: string, body: string): AgentInstructionSection {
   return { id, body: body.trim() };
 }
 
 export function combineInstructionSections(
-  ...groups: Array<AgentInstructionSection | AgentInstructionSection[] | null | undefined>
+  ...groups: AgentInstructionSectionGroup[]
 ): AgentInstructionSection[] {
   const seen = new Set<string>();
   const combined: AgentInstructionSection[] = [];
@@ -55,6 +58,19 @@ export function expandInstructionSection(
   )).filter((section) => section.body.length > 0);
 }
 
-export function composeAgentInstructions(sections: AgentInstructionSection[]): string[] {
-  return combineInstructionSections(sections).map((section) => section.body);
+export function composeAgentInstructions(...groups: AgentInstructionSectionGroup[]): string[] {
+  const seen = new Set<string>();
+  const instructions: string[] = [];
+  for (const group of groups) {
+    if (!group) continue;
+    const sections = Array.isArray(group) ? group : [group];
+    for (const section of sections) {
+      if (seen.has(section.id)) continue;
+      const body = section.body;
+      if (!body) continue;
+      seen.add(section.id);
+      instructions.push(body);
+    }
+  }
+  return instructions;
 }

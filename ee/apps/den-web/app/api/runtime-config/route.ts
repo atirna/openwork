@@ -14,7 +14,7 @@ function readOrgMode() {
 }
 
 function readDenApiUrl() {
-  return readBaseUrlEnv(process.env, "DEN_API_BASE") ?? denUrls(process.env).api;
+  return readBaseUrlEnv(process.env, "DEN_API_PUBLIC_URL") ?? denUrls(process.env).api;
 }
 
 function readBooleanEnv(name: string, defaultValue: boolean) {

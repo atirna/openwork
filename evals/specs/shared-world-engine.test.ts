@@ -13,6 +13,7 @@ test("shared world files are discovered, path-loadable, consent-gated, and detac
   assert.deepEqual(discovered.map((world) => world.name), [
     "azure-byok",
     "cross-workspace-split-view",
+    "den-split-origin-kind",
     "desktop-prod-live",
     "dev-headless",
     "headless-prod-live",
@@ -21,6 +22,7 @@ test("shared world files are discovered, path-loadable, consent-gated, and detac
 
   const azureByok = await loadWorldFile(join(WORLDS_DIRECTORY, "azure-byok.ts"));
   const crossWorkspaceSplitView = await loadWorldFile(join(WORLDS_DIRECTORY, "cross-workspace-split-view.ts"));
+  const denSplitOriginKind = await loadWorldFile(join(WORLDS_DIRECTORY, "den-split-origin-kind.ts"));
   const devHeadless = await loadWorldFile(join(WORLDS_DIRECTORY, "dev-headless.ts"));
   const headlessProduction = await loadWorldFile(join(WORLDS_DIRECTORY, "headless-prod-live.ts"));
   const desktopProduction = await loadWorldFile(join(WORLDS_DIRECTORY, "desktop-prod-live.ts"));
@@ -32,6 +34,10 @@ test("shared world files are discovered, path-loadable, consent-gated, and detac
   assert.equal(crossWorkspaceSplitView.definition.adapter, "eval");
   assert.equal(crossWorkspaceSplitView.definition.detached, true);
   assert.equal(crossWorkspaceSplitView.definition.requiresSharedState, false);
+  assert.equal(denSplitOriginKind.defaultName, "den-split-origin-kind");
+  assert.equal(denSplitOriginKind.definition.adapter, "eval");
+  assert.equal(denSplitOriginKind.definition.detached, true);
+  assert.equal(denSplitOriginKind.definition.requiresSharedState, false);
   assert.equal(devHeadless.defaultName, "dev-headless");
   assert.equal(devHeadless.definition.detached, true);
   assert.deepEqual(devHeadless.definition.topology, {

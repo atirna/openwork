@@ -119,6 +119,7 @@ export function PricingGrid(props: PricingGridProps) {
         { text: "Self-host the full platform, including the org control plane", icon: Server },
         { text: "Bring your own keys", icon: KeyRound },
         { text: "macOS, Windows, and Linux downloads", icon: Download },
+        { text: "Community support", icon: Plug },
       ],
       footer: "Free forever for up to 5 users",
     },
@@ -133,7 +134,6 @@ export function PricingGrid(props: PricingGridProps) {
       badge: "Recommended",
       features: [
         { text: "Everything in Free, up to 100 users", icon: Users },
-        { text: "Usage analytics", icon: SlidersHorizontal },
         { text: "Extension Marketplace", icon: Library },
         { text: "Bring your own LLM keys, distributed to your team", icon: KeyRound },
         { text: "Standard support included", icon: Plug },
@@ -151,7 +151,9 @@ export function PricingGrid(props: PricingGridProps) {
       features: [
         { text: "Everything in Team", icon: Users },
         { text: "SSO / SAML and SCIM provisioning", icon: Shield },
+        { text: "Usage and adoption analytics", icon: SlidersHorizontal },
         { text: "Desktop policies and version controls", icon: SlidersHorizontal },
+        { text: "Internal white-labeling — your name, logo, and branding", icon: FileText },
         { text: "OpenWork Web", icon: Code2 },
         { text: "Spend observability", icon: FileText },
         { text: "Bring your own inference — self-hosted or private models", icon: Server },
@@ -183,8 +185,9 @@ export function PricingGrid(props: PricingGridProps) {
         Prices exclude taxes. Same pricing for OpenWork Cloud and self-hosted. No deployment fees.
       </p>
       <p className="text-center text-[12px] font-medium text-gray-500">
-        Self-hosting the enterprise control plane is free for up to 5 users, free for development and
-        testing, and free to evaluate for 90 days at any size — see the{" "}
+        Self-hosting the control plane is free for up to 5 users (excluding Enterprise Features such as
+        SSO, analytics, desktop policies, and white-labeling), free for development and testing, and
+        free to evaluate for 30 days at any size with all features — see the{" "}
         <a
           href="https://github.com/different-ai/openwork/blob/dev/ee/LICENSE"
           rel="noreferrer"
