@@ -1,14 +1,15 @@
 /** @jsxImportSource react */
-import { useCallback, useEffect, useEffectEvent, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useEffectEvent, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 import type { UIMessage } from "ai";
 import { useQuery } from "@tanstack/react-query";
 import type { SessionStatus } from "@opencode-ai/sdk/v2/client";
-import { Check, Minimize2 } from "lucide-react";
+import { Check, CirclePause, Minimize2 } from "lucide-react";
 import { toast } from "@/components/ui/sonner";
 
 import { captureAnalyticsEvent } from "@/app/lib/analytics";
 import { createClient, unwrap } from "@/app/lib/opencode";
 import { abortSessionSafe } from "@/app/lib/opencode-session";
+import { setThemeMode } from "@/app/theme";
 import { t } from "@/i18n";
 import type { ComposerSettingsSection } from "@/react-app/domains/settings/library";
 import { type CloudImportedPlugin } from "@/app/cloud/import-state";
@@ -50,12 +51,27 @@ import { desktopBridge, openDesktopUrl } from "@/app/lib/desktop";
 import { parseSlashCommandInvocation } from "./composer/slash-command";
 import { connectSkillPrompt, parseConnectSkillToken } from "./composer/connect-skill-token";
 import { createPastedTextChip, resolvePastedTextPlaceholders } from "./composer/pasted-text";
+import {
+  canAdmitNextQueuedItem,
+  claimQueuedSend,
+  dispatchQueuedDrain,
+  getQueuedDrainState,
+  nextObservationProbeAt,
+  subscribeQueuedDrain,
+} from "./queued-drain-machine";
 import { DevProfiler } from "@/react-app/shell/dev-profiler";
 import { PaperGrainGradient } from "@openwork/ui/react";
 import { useShellConfig } from "@/react-app/shell/shell-config";
 import { useReactRenderWatchdog } from "@/react-app/shell/react-render-watchdog";
 import { SessionDebugPanel } from "./debug-panel";
 import { deriveRenderedSessionMessages, resolveRenderedSessionSnapshot } from "./session-render-state";
+import {
+  ADMISSION_OUTCOME_GRACE_MS,
+  createSingleFlight,
+  messageHasVisibleAssistantOutput,
+  resolveAdmissionOutcome,
+} from "./session-admission-outcome";
+import { interruptedTaskRecoveryPrompt } from "@/react-app/domains/session/sync/session-error";
 import { useLocal } from "@/react-app/kernel/local-provider";
 import { resolveAttachmentFileMetadata } from "@/react-app/domains/session/sync/attachment-file-part";
 import { deriveSessionRenderModel } from "@/react-app/domains/session/sync/transition-controller";
@@ -99,6 +115,7 @@ import type {
   ChatToolReconnectResult,
 } from "@/components/tools/error-attribution";
 import { useChatMcpReconnectStore } from "@/components/tools/mcp-reconnect-state";
+import { MERMAID_LIMITS } from "@/components/markdown/mermaid";
 import {
   isChatMcpReconnectScopeCurrent,
   waitForFreshMcpAuthorization,
@@ -133,6 +150,11 @@ This shared renderer keeps **bold proof text**, inline \`renderMarkdownHtml\`, a
 \`\`\`ts
 const pipeline = "shared markdown primitive";
 console.log(pipeline);
+\`\`\`
+
+\`\`\`mermaid
+flowchart LR
+  InlineStart[Inline Mermaid Start] --> InlineFinish[Inline Mermaid Finish]
 \`\`\`
 
 Search token: markdown-primitive-highlight.`;
@@ -170,6 +192,25 @@ type SessionError = {
 function createMarkdownPrimitiveEvalMessages(sessionId: string) {
   const userMessageId = `${sessionId}:eval-markdown-user`;
   const assistantMessageId = `${sessionId}:eval-markdown-assistant`;
+  const guardedDiagram = [
+    "flowchart TD",
+    ...Array.from({ length: MERMAID_LIMITS.maxNodes + 1 }, (_, index) => `Guard${index}[Guard node ${index}]`),
+  ].join("\n");
+  const proofText = `${MARKDOWN_PRIMITIVE_EVAL_TEXT}
+
+\`\`\`mermaid
+flowchart LR
+  Remote[No remote resources] --> Safe[Sanitized SVG]
+  click Remote "https://example.com/redirect"
+\`\`\`
+
+\`\`\`mermaid
+not-a-mermaid-diagram
+\`\`\`
+
+\`\`\`mermaid
+${guardedDiagram}
+\`\`\``;
   const messages: UIMessage[] = [
     {
       id: userMessageId,
@@ -180,7 +221,7 @@ function createMarkdownPrimitiveEvalMessages(sessionId: string) {
     {
       id: assistantMessageId,
       role: "assistant",
-      parts: [{ type: "text", text: MARKDOWN_PRIMITIVE_EVAL_TEXT }],
+      parts: [{ type: "text", text: proofText }],
       metadata: { opencode: { created: Date.now() + 1 } },
     },
   ];
@@ -558,14 +599,6 @@ function useSharedQueryState<T>(queryKey: readonly unknown[], fallback: T) {
   return query.data ?? fallback;
 }
 
-function messageHasVisibleAssistantOutput(message: UIMessage) {
-  if (message.role !== "assistant") return false;
-  return message.parts.some((part) => {
-    if ("text" in part && typeof part.text === "string") return part.text.trim().length > 0;
-    return part.type === "dynamic-tool" || part.type === "file";
-  });
-}
-
 function AssistantWaitingCard({ label = t("session.assistant_thinking") }: { label?: string }) {
   return (
     <div className="flex justify-start" role="status" aria-live="polite">
@@ -583,6 +616,34 @@ function AssistantWaitingCard({ label = t("session.assistant_thinking") }: { lab
           />
         </div>
         <span>{label}</span>
+      </div>
+    </div>
+  );
+}
+
+// Terminal recovery surface for an accepted admission that reached idle with
+// no assistant result. Styled after the interrupted-run status line: a quiet
+// pause, not a failure, with Resume as the single emphasized action.
+function AdmissionOutcomeUnknownCard(props: { resuming: boolean; onResume: () => void }) {
+  return (
+    <div
+      data-testid="admission-outcome-unknown"
+      role="status"
+      className="not-prose mx-auto flex w-full max-w-3xl flex-col items-start gap-2 px-2 md:px-10"
+    >
+      <div className="flex min-w-0 items-center gap-2 py-1 text-sm text-dls-secondary">
+        <CirclePause aria-hidden="true" className="size-4 shrink-0" />
+        <span className="min-w-0">{t("session.admission_outcome_unknown")}</span>
+        <span aria-hidden="true" className="text-dls-secondary/60">·</span>
+        <button
+          type="button"
+          data-testid="admission-outcome-resume"
+          disabled={props.resuming}
+          onClick={props.onResume}
+          className="shrink-0 cursor-pointer font-medium text-dls-text underline-offset-2 transition-colors hover:underline disabled:cursor-default disabled:opacity-60"
+        >
+          {t("session.resume_interrupted")}
+        </button>
       </div>
     </div>
   );
@@ -898,6 +959,9 @@ export function SessionSurface(props: SessionSurfaceProps) {
   const [restoringRevertedMessages, setRestoringRevertedMessages] = useState(false);
   const [showDelayedLoading, setShowDelayedLoading] = useState(false);
   const [awaitingAssistantBaseline, setAwaitingAssistantBaseline] = useState<number | null>(null);
+  // Terminal invariant: an accepted admission that reached idle with no
+  // assistant result surfaces a bounded recovery card instead of plain idle.
+  const [admissionOutcomeUnresolved, setAdmissionOutcomeUnresolved] = useState(false);
   const [rendered, setRendered] = useState<{ sessionId: string; snapshot: OpenworkSessionSnapshot } | null>(null);
   const [toolSkills, setToolSkills] = useState<SkillCard[]>([]);
   const [toolMcpServers, setToolMcpServers] = useState<McpServerEntry[]>([]);
@@ -922,7 +986,16 @@ export function SessionSurface(props: SessionSurfaceProps) {
   const cloudQueueBlockedRef = useRef(false);
   // Shared with promote-to-send so a manual send-now cannot race the idle drain.
   const drainingQueueRef = useRef(false);
-  const awaitingQueueBusyRef = useRef(false);
+  // Admission-aware drain state. It lives in a module-level per-session store
+  // (not a ref) so an in-flight admission survives navigating away and back.
+  const subscribeDrainState = useCallback(
+    (listener: () => void) => subscribeQueuedDrain(props.sessionId, listener),
+    [props.sessionId],
+  );
+  const readDrainState = useCallback(() => getQueuedDrainState(props.sessionId), [props.sessionId]);
+  const queuedDrainState = useSyncExternalStore(subscribeDrainState, readDrainState);
+  const lastObservationProbeAtRef = useRef<number | null>(null);
+  const [observationProbeVersion, setObservationProbeVersion] = useState(0);
   const composerShellRef = useRef<HTMLDivElement>(null);
   const hydratedKeyRef = useRef<string | null>(null);
   const autoOpenedTargetRef = useRef<string | null>(null);
@@ -957,7 +1030,18 @@ export function SessionSurface(props: SessionSurfaceProps) {
 
   const currentSnapshot = snapshotQuery.data?.session.id === props.sessionId ? snapshotQuery.data : null;
   const transcriptState = useSharedQueryState<UIMessage[]>(transcriptQueryKey, EMPTY_TRANSCRIPT);
-  const statusState = useSharedQueryState(statusQueryKey, currentSnapshot?.status ?? IDLE_STATUS);
+  const statusQuery = useQuery<SessionStatus, Error, SessionStatus, readonly unknown[]>({
+    queryKey: statusQueryKey,
+    queryFn: async () => currentSnapshot?.status ?? IDLE_STATUS,
+    enabled: false,
+  });
+  const statusState = statusQuery.data ?? currentSnapshot?.status ?? IDLE_STATUS;
+  // The shared status entry is written only by the session-status stream and
+  // its reconnect-time level reconciliation, so its presence marks the value
+  // as a real observed level instead of a render fallback. Queue-drain
+  // completion must never trust a fallback idle (a remount briefly renders
+  // idle before any status has been observed).
+  const statusIsObservedLevel = statusQuery.data !== undefined;
 
   useEffect(() => {
     if (!currentSnapshot) return;
@@ -971,6 +1055,7 @@ export function SessionSurface(props: SessionSurfaceProps) {
     setRestoringRevertedMessages(false);
     setShowDelayedLoading(false);
     setAwaitingAssistantBaseline(null);
+    setAdmissionOutcomeUnresolved(false);
     // Composer draft state lives in the shared store keyed by session id, so
     // switching sessions preserves each session's own in-progress composer.
     autoOpenedTargetRef.current = null;
@@ -1118,6 +1203,24 @@ export function SessionSurface(props: SessionSurfaceProps) {
     };
   }, [props.sessionId]);
   useControlAction(props.isControlTarget ? seedMarkdownPrimitiveControlAction : null);
+  const setMermaidEvalThemeControlAction = useMemo<OpenworkControlAction | null>(() => {
+    if (!import.meta.env.DEV) return null;
+
+    return {
+      id: "eval.mermaid.set_theme",
+      label: "Set the Mermaid eval theme",
+      description: "Dev-only eval hook that changes the app theme through the production theme API.",
+      sideEffect: "mutation",
+      disabled: !props.sessionId,
+      execute: (args) => {
+        const mode = args && typeof args === "object" && "mode" in args ? args.mode : null;
+        if (mode !== "light" && mode !== "dark") throw new Error("Mermaid eval theme must be light or dark.");
+        setThemeMode(mode);
+        return { ok: true, mode };
+      },
+    };
+  }, [props.sessionId]);
+  useControlAction(props.isControlTarget ? setMermaidEvalThemeControlAction : null);
   const seedMarkdownMathControlAction = useMemo<OpenworkControlAction | null>(() => {
     if (!import.meta.env.DEV) return null;
 
@@ -1382,17 +1485,34 @@ export function SessionSurface(props: SessionSurfaceProps) {
     return () => window.clearTimeout(id);
   }, [pendingSessionLoad]);
 
+  // Terminal invariant for accepted admissions: idle with no assistant result
+  // must never silently clear the task. The transcript-length check alone is
+  // not an outcome — the newly appended user message satisfies it even when no
+  // assistant message exists. Deriving the outcome from the transcript (last
+  // user message answered by visible assistant output) also makes the recovery
+  // state survive a reload: rehydrating the same transcript recomputes it.
+  const admissionOutcome = useMemo(() => resolveAdmissionOutcome({
+    messages: renderedMessages,
+    statusType: liveStatus.type,
+    sending,
+    hasActiveQuestion: Boolean(props.activeQuestion),
+    hasActivePermission: Boolean(props.activePermission),
+    hasSessionError: error !== null,
+  }), [error, liveStatus.type, props.activePermission, props.activeQuestion, renderedMessages, sending]);
+
   useEffect(() => {
-    if (awaitingAssistantBaseline === null) return;
-    if (assistantOutputAfterAwaitStart) {
+    if (admissionOutcome !== "unresolved") {
+      setAdmissionOutcomeUnresolved(false);
       return;
     }
-    if (sending || liveStatus.type !== "idle" || renderedMessages.length <= awaitingAssistantBaseline) return;
     const id = window.setTimeout(() => {
+      // Swap the wait state for the recovery card in one step so the
+      // admission never terminates as plain idle without a result.
       setAwaitingAssistantBaseline(null);
-    }, 1200);
+      setAdmissionOutcomeUnresolved(true);
+    }, ADMISSION_OUTCOME_GRACE_MS);
     return () => window.clearTimeout(id);
-  }, [assistantOutputAfterAwaitStart, awaitingAssistantBaseline, liveStatus.type, renderedMessages.length, sending]);
+  }, [admissionOutcome]);
 
   const model = deriveSessionRenderModel({
     intendedSessionId: props.sessionId,
@@ -1563,8 +1683,9 @@ export function SessionSurface(props: SessionSurfaceProps) {
       return;
     }
     cloudQueueBlockedRef.current = false;
+    dispatchQueuedDrain(props.sessionId, { type: "user_retry" });
     setCloudQueueRetryVersion((version) => version + 1);
-  }, [attachments.length, draft, handleSend]);
+  }, [attachments.length, draft, handleSend, props.sessionId]);
 
   // Queue: hold the draft locally and clear the composer. The drain effect
   // sends it once the session reports idle.
@@ -1629,6 +1750,7 @@ export function SessionSurface(props: SessionSurfaceProps) {
     // lands and the session reports idle (#2014).
     queuedItems.forEach((item) => item.draft.attachments.forEach(revokeAttachmentPreview));
     clearQueuedDrafts(props.sessionId);
+    dispatchQueuedDrain(props.sessionId, { type: "queue_cleared" });
     // The prompt was sent through a directory-scoped client (session-route
     // passes the workspace root), so the abort must target the same scope —
     // without it the server resolves the default project, finds no live run,
@@ -1657,61 +1779,114 @@ export function SessionSurface(props: SessionSurfaceProps) {
   }, [props.sessionId, props.workspaceId]);
 
   // Drain one queued follow-up each time the session goes idle, so prompts
-  // run as separate turns instead of one merged message. The busy-wait is
-  // grounded in the engine's own run status (liveStatus), not chatStreaming:
-  // the client-side `sending` pulse would release the wait before the engine
+  // run as separate turns instead of one merged message. Progress is grounded
+  // in the engine's own run status (liveStatus), not chatStreaming: the
+  // client-side `sending` pulse would release the wait before the engine
   // actually went busy and the next idle render could steer the following
-  // item into the still-starting turn.
+  // item into the still-starting turn. Feed status levels into the
+  // admission-aware machine: a busy level attaches the current admission to a
+  // running run, and an idle level completes an admission that was already
+  // observed running. An admission that never shows busy is released only by
+  // the authoritative probe below — never by a stale idle render.
   useEffect(() => {
     if (liveStatus.type !== "idle") {
-      awaitingQueueBusyRef.current = false;
+      dispatchQueuedDrain(props.sessionId, { type: "busy_observed" });
+      return;
     }
-  }, [liveStatus.type]);
+    if (!statusIsObservedLevel) return;
+    if (getQueuedDrainState(props.sessionId).phase.kind === "running") {
+      dispatchQueuedDrain(props.sessionId, { type: "idle_reconciled", observedAt: Date.now() });
+    }
+  }, [liveStatus.type, props.sessionId, statusIsObservedLevel]);
+
+  // Admission observation probe: when an admitted send has produced no busy
+  // observation within its window (dropped event, upstream dispatch failure
+  // after admission, or an event-stream reconnect), reconcile against an
+  // authoritative snapshot fetch instead of waiting on the missing edge
+  // forever. The probe's start time orders the observed level against the
+  // admission time inside the machine, so a stale idle can never release it.
+  useEffect(() => {
+    const probeAt = nextObservationProbeAt(queuedDrainState, lastObservationProbeAtRef.current);
+    if (probeAt === null) return;
+    const timer = window.setTimeout(() => {
+      const startedAt = Date.now();
+      lastObservationProbeAtRef.current = startedAt;
+      void (async () => {
+        try {
+          const result = await snapshotQuery.refetch();
+          const probed = result.data?.session.id === props.sessionId ? result.data.status : null;
+          if (!probed) return;
+          if (probed.type === "idle") {
+            dispatchQueuedDrain(props.sessionId, { type: "idle_reconciled", observedAt: startedAt });
+          } else {
+            dispatchQueuedDrain(props.sessionId, { type: "busy_observed" });
+          }
+        } catch {
+          // Probe failed (for example the local server was briefly
+          // unreachable); the version bump below re-arms a spaced retry.
+        } finally {
+          setObservationProbeVersion((version) => version + 1);
+        }
+      })();
+    }, Math.max(0, probeAt - Date.now()));
+    return () => window.clearTimeout(timer);
+  }, [observationProbeVersion, props.sessionId, queuedDrainState, snapshotQuery.refetch]);
 
   useEffect(() => {
     if (drainingQueueRef.current || sendingQueued) return;
     if (cloudQueueBlockedRef.current) return;
-    if (awaitingQueueBusyRef.current) return;
     if (queuedItems.length === 0) return;
     if (chatStreaming || liveStatus.type !== "idle") return;
+    if (!canAdmitNextQueuedItem(queuedDrainState)) return;
     const nextItem = queuedItems[0];
     if (!nextItem) return;
     const nextDraft = withoutRevertTarget(nextItem.draft);
     if (!nextDraft) return;
+    // Claim the send slot atomically BEFORE the send can resolve: the
+    // engine's busy status can render before the send promise's continuation
+    // runs, and claiming late would erase that observation. The claim is
+    // per-session (not per-surface), so a split view of this session cannot
+    // deliver the same queued item twice.
+    if (!claimQueuedSend(props.sessionId, nextItem.id)) return;
     drainingQueueRef.current = true;
     removeQueuedDraftFromStore(props.sessionId, nextItem.id);
-    // Arm the busy-wait BEFORE the send can resolve: the engine's busy status
-    // can render before the send promise's continuation runs, and arming late
-    // would erase that observation — the next idle would then never drain the
-    // following item. Failure paths below disarm so retries stay possible.
-    awaitingQueueBusyRef.current = true;
     void (async () => {
       try {
         const result = await sendDraft(nextDraft);
+        dispatchQueuedDrain(props.sessionId, {
+          type: "send_result",
+          itemId: nextItem.id,
+          outcome: result.outcome,
+          at: Date.now(),
+        });
         if (result.outcome === "blocked") {
           cloudQueueBlockedRef.current = true;
-          awaitingQueueBusyRef.current = false;
           prependQueuedDrafts(props.sessionId, [{ id: nextItem.id, draft: nextDraft }]);
         } else if (result.outcome === "cancelled") {
-          awaitingQueueBusyRef.current = false;
           prependQueuedDrafts(props.sessionId, [{ id: nextItem.id, draft: nextDraft }]);
         } else {
           nextDraft.attachments.forEach(revokeAttachmentPreview);
         }
       } catch {
-        awaitingQueueBusyRef.current = false;
+        dispatchQueuedDrain(props.sessionId, { type: "send_error", itemId: nextItem.id });
         prependQueuedDrafts(props.sessionId, [{ id: nextItem.id, draft: nextDraft }]);
       } finally {
         drainingQueueRef.current = false;
       }
     })();
-  }, [chatStreaming, cloudQueueRetryVersion, liveStatus.type, prependQueuedDrafts, props.sessionId, queuedItems, removeQueuedDraftFromStore, sendDraft, sendingQueued]);
+  }, [chatStreaming, cloudQueueRetryVersion, liveStatus.type, prependQueuedDrafts, props.sessionId, queuedDrainState, queuedItems, removeQueuedDraftFromStore, sendDraft, sendingQueued]);
 
   useEffect(() => {
     if (props.cloudMcpSubmissionState.status !== "failed") {
       cloudQueueBlockedRef.current = false;
+      // A cleared submission gate releases a drain halted on needs_input; a
+      // terminal_failure halt stays until the user explicitly retries.
+      const drain = getQueuedDrainState(props.sessionId);
+      if (drain.phase.kind === "halted" && drain.phase.reason === "needs_input") {
+        dispatchQueuedDrain(props.sessionId, { type: "user_retry" });
+      }
     }
-  }, [props.cloudMcpSubmissionState.status]);
+  }, [props.cloudMcpSubmissionState.status, props.sessionId]);
 
   useEffect(() => {
     const nextDraft = buildDraft(draft, attachments);
@@ -2078,21 +2253,34 @@ export function SessionSurface(props: SessionSurfaceProps) {
     void typeComposerText(prompt);
   }, [typeComposerText]);
 
-  // Explicit user click on the interrupted-run error card. Re-submits the
-  // classified recovery prompt through the normal send path so the agent
-  // continues the interrupted task in this session instead of restarting it.
+  // Explicit user click on the interrupted-run error card or the
+  // outcome-unknown recovery card. Re-submits the classified recovery prompt
+  // through the normal send path so the agent continues the interrupted task
+  // in this session instead of restarting it. The single-flight guard drops
+  // (never queues) repeat clicks while one resume is in flight, so rapid
+  // clicking admits exactly one recovery prompt.
+  const resumeGuardRef = useRef(createSingleFlight());
+  const [resuming, setResuming] = useState(false);
   const handleResumeInterrupted = useCallback(async (recoveryPrompt: string) => {
-    try {
-      await sendDraft({
-        mode: "prompt",
-        parts: [{ type: "text", text: recoveryPrompt }],
-        attachments: [],
-        text: recoveryPrompt,
-      });
-    } catch {
-      // sendDraft already surfaced the failure on the session error state.
-    }
+    await resumeGuardRef.current.run(async () => {
+      setResuming(true);
+      try {
+        await sendDraft({
+          mode: "prompt",
+          parts: [{ type: "text", text: recoveryPrompt }],
+          attachments: [],
+          text: recoveryPrompt,
+        });
+      } catch {
+        // sendDraft already surfaced the failure on the session error state.
+      } finally {
+        setResuming(false);
+      }
+    });
   }, [sendDraft]);
+  const handleResumeUnknownOutcome = useCallback(() => {
+    void handleResumeInterrupted(interruptedTaskRecoveryPrompt);
+  }, [handleResumeInterrupted]);
 
   useEffect(() => {
     const resetReconnectState = () => {
@@ -2448,6 +2636,12 @@ export function SessionSurface(props: SessionSurfaceProps) {
                 </OpenTargetProvider>
               </DevProfiler>
             )}
+            {admissionOutcomeUnresolved && renderedMessages.length > 0 ? (
+              <AdmissionOutcomeUnknownCard
+                resuming={resuming}
+                onResume={handleResumeUnknownOutcome}
+              />
+            ) : null}
           </div>
         </div>
         <SessionScrollOverlay

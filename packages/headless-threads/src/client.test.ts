@@ -1,3 +1,4 @@
+import { createServer, type Server } from "node:http";
 import { describe, expect, test } from "bun:test";
 
 import { createHeadlessThreadClient } from "./client.js";
@@ -11,6 +12,26 @@ type Beat = { status: HeadlessThreadStatus; messages: MessageWire[] };
 
 const SESSION_ID = "ses_1";
 const BASE_URL = "http://openwork.test";
+
+function listen(server: Server): Promise<void> {
+  return new Promise((resolve, reject) => {
+    server.once("error", reject);
+    server.listen(0, "127.0.0.1", () => {
+      server.off("error", reject);
+      resolve();
+    });
+  });
+}
+
+function close(server: Server): Promise<void> {
+  return new Promise((resolve, reject) => server.close((error) => error ? reject(error) : resolve()));
+}
+
+function serverUrl(server: Server): string {
+  const address = server.address();
+  if (!address || typeof address === "string") throw new Error("test server did not bind");
+  return `http://127.0.0.1:${address.port}`;
+}
 
 function reply(id: string, role: string, text?: string, parentID?: string): MessageWire {
   return {
@@ -387,6 +408,36 @@ describe("failures", () => {
     });
 
     await expect(client.getThreadSnapshot(SESSION_ID)).rejects.toBeDefined();
+  });
+
+  test("a custom Cloud fetch cannot follow a 307 with the thread body or tokens", async () => {
+    const targetRequests: Array<{ authorization: string | undefined; hostToken: string | undefined }> = [];
+    const target = createServer((request, response) => {
+      targetRequests.push({
+        authorization: request.headers.authorization,
+        hostToken: typeof request.headers["x-openwork-host-token"] === "string" ? request.headers["x-openwork-host-token"] : undefined,
+      });
+      response.end("unexpected");
+    });
+    const preview = createServer((_request, response) => {
+      response.writeHead(307, { Location: `${serverUrl(target)}/captured` });
+      response.end();
+    });
+    await Promise.all([listen(target), listen(preview)]);
+    try {
+      const client = createHeadlessThreadClient({
+        baseUrl: serverUrl(preview),
+        workspaceId: "ws_1",
+        token: "client-secret",
+        hostToken: "host-secret",
+        fetch: (url, init) => fetch(url, init),
+      });
+
+      await expect(client.createThread({ title: "Secret thread" })).rejects.toBeDefined();
+      expect(targetRequests).toEqual([]);
+    } finally {
+      await Promise.all([close(preview), close(target)]);
+    }
   });
 });
 

@@ -5,6 +5,7 @@ import { streamSSE } from "hono/streaming"
 import {
   AUTOMATION_MODEL_ATTENTION_CAPABILITY,
   AUTOMATION_MODEL_ATTENTION_CAPABILITY_HEADER,
+  REMOTE_SESSION_DESKTOP_RUNNER_CAPABILITY,
   automationDesktopRunnerAssignmentSchema,
   automationDesktopRunnerRegistrationSchema,
   automationDesktopRunnerPresenceSchema,
@@ -21,6 +22,9 @@ import {
   automationRunnerWorkResponseSchema,
   createAutomationSchema,
   createCloudAutomationSchema,
+  remoteSessionCommandClaimResponseSchema,
+  remoteSessionCommandCompleteRequestSchema,
+  remoteSessionCommandCompleteResponseSchema,
   updateAutomationSchema,
 } from "@openwork/types/automations"
 import {
@@ -34,6 +38,7 @@ import { invalidRequestSchema, jsonResponse, notFoundSchema, unauthorizedSchema 
 import { automationService, type AutomationService } from "../../automations/service.js"
 import { automationRunnerAudienceFromRequest, automationRunnerAuth } from "../../automations/runner-auth.js"
 import { env } from "../../env.js"
+import { databaseRemoteSessionCommandStore } from "../../remote-sessions/commands.js"
 import {
   RUNNER_KEEPALIVE_INTERVAL_MS,
   RUNNER_NOTIFICATION_POLL_MIN_MS,
@@ -227,8 +232,79 @@ export function registerAutomationRoutes<T extends { Variables: RouteVariables }
   app.get("/v1/automation-runner/work", async (c) => {
     const identity = await authenticateRunner(c)
     if (!identity) return c.json({ error: "runner_unauthorized" }, 401)
-    return c.json(automationRunnerWorkResponseSchema.parse({ items: await service.discoverDesktopRunnerWork(identity) }))
+    // Automation run items keep their long-standing wire shape untouched;
+    // remote-session command items are only appended for runners that
+    // registered the remote_session_v1 capability, so released runners never
+    // see the new item kind.
+    const automationItems = await service.discoverDesktopRunnerWork(identity)
+    const items: Array<
+      (typeof automationItems)[number] | { kind: "remote_session_create"; commandId: string }
+    > = [...automationItems]
+    if (identity.capabilities.includes(REMOTE_SESSION_DESKTOP_RUNNER_CAPABILITY)) {
+      const commands = await databaseRemoteSessionCommandStore.listPendingForRunner({
+        organizationId: identity.organizationId,
+        ownerMemberId: identity.ownerMemberId,
+        now: Date.now(),
+        limit: 5,
+      })
+      for (const command of commands) {
+        items.push({ kind: "remote_session_create", commandId: command.id })
+      }
+    }
+    return c.json(automationRunnerWorkResponseSchema.parse({ items }))
   })
+
+  app.post("/v1/remote-session-commands/:id/claim", paramValidator(idParamsSchema), async (c) => {
+    const identity = await authenticateRunner(c)
+    if (!identity) return c.json({ error: "runner_unauthorized" }, 401)
+    if (!identity.capabilities.includes(REMOTE_SESSION_DESKTOP_RUNNER_CAPABILITY)) {
+      return c.json({ error: "runner_capability_missing" }, 403)
+    }
+    const command = await databaseRemoteSessionCommandStore.claim({
+      commandId: c.req.valid("param").id,
+      organizationId: identity.organizationId,
+      ownerMemberId: identity.ownerMemberId,
+      runnerId: identity.runnerId,
+      now: Date.now(),
+    })
+    if (!command) return c.json({ error: "command_claim_conflict" }, 409)
+    return c.json(remoteSessionCommandClaimResponseSchema.parse({
+      assignment: {
+        commandId: command.id,
+        kind: "remote_session_create",
+        title: command.title,
+        prompt: command.prompt,
+        model: command.model,
+        expiresAt: command.expiresAt,
+      },
+    }))
+  })
+
+  app.post(
+    "/v1/remote-session-commands/:id/complete",
+    paramValidator(idParamsSchema), jsonValidator(remoteSessionCommandCompleteRequestSchema),
+    async (c) => {
+      const identity = await authenticateRunner(c)
+      if (!identity) return c.json({ error: "runner_unauthorized" }, 401)
+      if (!identity.capabilities.includes(REMOTE_SESSION_DESKTOP_RUNNER_CAPABILITY)) {
+        return c.json({ error: "runner_capability_missing" }, 403)
+      }
+      const command = await databaseRemoteSessionCommandStore.complete({
+        commandId: c.req.valid("param").id,
+        runnerId: identity.runnerId,
+        ...c.req.valid("json"),
+      })
+      if (!command) return c.json({ error: "command_complete_conflict" }, 409)
+      return c.json(remoteSessionCommandCompleteResponseSchema.parse({
+        command: {
+          id: command.id,
+          status: command.status,
+          sessionId: command.sessionId,
+          workspaceId: command.workspaceId,
+        },
+      }))
+    },
+  )
 
   app.post("/v1/automation-runs/:id/claim", paramValidator(automationRunParamsSchema), async (c) => {
     const identity = await authenticateRunner(c)

@@ -42,6 +42,7 @@ import { registerTelemetryRoutes } from "./routes/telemetry/index.js"
 import { registerVersionRoutes } from "./routes/version/index.js"
 import { registerWebhookRoutes } from "./routes/webhooks/index.js"
 import { registerWorkerRoutes } from "./routes/workers/index.js"
+import { registerCloudWorkerCompatibilityPreflightRoute } from "./routes/workers/compatibility.js"
 import type { AuthContextVariables } from "./session.js"
 import { sessionMiddleware } from "./session.js"
 import { isOperationalErrorPath, normalizeOperationalErrorResponse, operationalErrorResponse } from "./operational-errors.js"
@@ -121,6 +122,10 @@ app.use(
     maxAge: 600,
   }),
 )
+
+// This bearer-token-only compatibility surface must accept native/file-origin
+// preflights before the credentialed browser allowlist can intercept OPTIONS.
+registerCloudWorkerCompatibilityPreflightRoute(app)
 
 if (env.corsOrigins.length > 0) {
   app.use(

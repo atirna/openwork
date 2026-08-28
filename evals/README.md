@@ -174,7 +174,7 @@ deep-patched with `.with()`. The topology has:
   ports, and `den.seed` selects the supported demo seed.
 - `apps`: optional named desktop apps with their target org/member, workspace,
   model, sessions, and optional local server delay.
-- `witnesses`: optional named witnesses; v1 accepts MCP mocks only.
+- `witnesses`: optional named MCP or database-backed LiteLLM witnesses. Organizations can bind LiteLLM witnesses through `llmProviders` declarations.
 
 The shipped definitions are `soloWorkspace`, `supportOrg`, `acmeDemo`,
 `acmeDocs`, and `desktopProductionLive`; their CLI names are `solo`,
@@ -207,6 +207,7 @@ pnpm world forget <name>
 
 # Path definitions use the filename as their name and can default to detached.
 pnpm world up ./worlds/dev-headless.ts
+pnpm world up ./worlds/litellm-per-member.ts
 pnpm world up ./worlds/headless-prod-live.ts --allow-shared-state
 
 # Explicit macOS-only live sharing with the installed production stores.

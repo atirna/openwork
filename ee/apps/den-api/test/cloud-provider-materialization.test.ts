@@ -12,6 +12,7 @@ type FetchCall = {
   path: string
   headers: Record<string, string>
   body: unknown
+  redirect: RequestRedirect | null
 }
 
 const organizationId = createDenTypeId("organization")
@@ -197,6 +198,7 @@ function makeInstance(input: {
       path: parsed.pathname,
       headers: headersRecord(init?.headers),
       body,
+      redirect: init?.redirect ?? null,
     })
 
     if (method === "GET" && parsed.pathname.startsWith("/env/")) {
@@ -417,6 +419,7 @@ describe("Cloud provider materialization", () => {
     })
     expect(instance.calls[3]?.headers["x-openwork-host-token"]).toBe("host-token")
     expect(instance.calls[3]?.headers.authorization).toBeUndefined()
+    expect(instance.calls.every((call) => call.redirect === "error")).toBe(true)
     expect(instance.calls[3]?.body).toEqual({
       provider: {
         [provider.id]: {

@@ -176,15 +176,19 @@ export const automationExecutionTargetSchema = z.enum(["desktop", "cloud"])
 export type AutomationExecutionTarget = z.infer<typeof automationExecutionTargetSchema>
 
 export const AUTOMATION_MODEL_ATTENTION_CAPABILITY = "model_attention_v1" as const
+export const REMOTE_SESSION_DESKTOP_RUNNER_CAPABILITY = "remote_session_v1"
 export const AUTOMATION_MODEL_ATTENTION_CAPABILITY_HEADER = "x-openwork-automation-model-attention" as const
-export const automationDesktopRunnerCapabilitySchema = z.literal(AUTOMATION_MODEL_ATTENTION_CAPABILITY)
+export const automationDesktopRunnerCapabilitySchema = z.enum([
+  AUTOMATION_MODEL_ATTENTION_CAPABILITY,
+  REMOTE_SESSION_DESKTOP_RUNNER_CAPABILITY,
+])
 export type AutomationDesktopRunnerCapability = z.infer<typeof automationDesktopRunnerCapabilitySchema>
 
 export const automationDesktopRunnerRegistrationSchema = z.object({
   runnerId: idSchema.min(8),
   protocolVersion: z.literal(1),
   supportedExecutionTargets: z.array(z.literal("desktop")).length(1),
-  capabilities: z.array(automationDesktopRunnerCapabilitySchema).max(1).default([]),
+  capabilities: z.array(automationDesktopRunnerCapabilitySchema).max(2).default([]),
   appVersion: z.string().trim().min(1).max(80),
   platform: z.enum(["darwin", "win32", "linux"]),
   concurrency: z.number().int().min(1).max(4),
@@ -212,14 +216,63 @@ export const automationRunnerNotificationSchema = z.object({
 }).strict()
 export type AutomationRunnerNotification = z.infer<typeof automationRunnerNotificationSchema>
 
-export const automationRunnerWorkItemSchema = z.object({
-  runId: idSchema,
-  executionTarget: z.literal("desktop"),
-})
+export const automationRunnerWorkItemSchema = z.union([
+  // The automation-run item shape predates remote-session commands and is
+  // consumed by released desktop runners: it must keep every field it has
+  // always carried.
+  z.object({ runId: idSchema, executionTarget: z.literal("desktop") }),
+  z.object({ kind: z.literal("remote_session_create"), commandId: idSchema }),
+])
 export const automationRunnerWorkResponseSchema = z.object({
-  items: z.array(automationRunnerWorkItemSchema).max(4),
+  items: z.array(automationRunnerWorkItemSchema).max(9),
 })
 export type AutomationRunnerWorkResponse = z.infer<typeof automationRunnerWorkResponseSchema>
+
+export const remoteSessionCommandAssignmentSchema = z.object({
+  commandId: idSchema,
+  kind: z.literal("remote_session_create"),
+  title: z.string().trim().min(1).max(120),
+  prompt: z.string().min(1).max(100_000).nullable(),
+  model: z.object({
+    providerId: idSchema,
+    modelId: idSchema,
+    variant: z.string().trim().min(1).max(60).nullable(),
+  }).nullable(),
+  expiresAt: timestampSchema,
+})
+export const remoteSessionCommandClaimResponseSchema = z.object({
+  assignment: remoteSessionCommandAssignmentSchema,
+})
+const remoteSessionCommandResultSummarySchema = z.string().max(4096).optional()
+const remoteSessionCommandErrorSchema = z.object({
+  code: z.string().trim().min(1).max(60),
+  message: z.string().trim().min(1).max(2000),
+})
+export const remoteSessionCommandCompleteRequestSchema = z.discriminatedUnion("status", [
+  z.object({
+    status: z.literal("delivered"),
+    sessionId: z.string().trim().min(1).max(240),
+    workspaceId: z.string().trim().min(1).max(240),
+    resultSummary: remoteSessionCommandResultSummarySchema,
+    error: z.never().optional(),
+  }),
+  z.object({
+    status: z.literal("failed"),
+    sessionId: z.never().optional(),
+    workspaceId: z.never().optional(),
+    resultSummary: remoteSessionCommandResultSummarySchema,
+    error: remoteSessionCommandErrorSchema,
+  }),
+])
+export type RemoteSessionCommandCompleteRequest = z.infer<typeof remoteSessionCommandCompleteRequestSchema>
+export const remoteSessionCommandCompleteResponseSchema = z.object({
+  command: z.object({
+    id: idSchema,
+    status: z.enum(["delivered", "failed"]),
+    sessionId: z.string().max(240).nullable(),
+    workspaceId: z.string().max(240).nullable(),
+  }),
+})
 
 export const automationDesktopRunnerAssignmentSchema = z.object({
   executionTarget: z.literal("desktop"),

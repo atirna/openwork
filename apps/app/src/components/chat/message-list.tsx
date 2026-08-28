@@ -48,7 +48,6 @@ import { TodoWriteTool } from "@/components/tools/todowrite"
 import { WebfetchTool } from "@/components/tools/webfetch"
 import { WebsearchTool } from "@/components/tools/websearch"
 import { useMessageList, useSessionErrorMessage } from "@/components/chat/message-list-provider"
-import { ArtifactList } from "@/components/chat/artifact"
 import { TaskSuggestions } from "@/components/chat/task-suggestions"
 import {
   DescriptiveButtonContent,
@@ -1206,11 +1205,6 @@ function MessageGroup({
         </Message>
       ))}
       {renderItems(proseItems, stepItems.length, collapseSteps)}
-      {/* Paper artifact strip: one FILES row per turn, at the end. */}
-      <ArtifactList
-        messages={items.map((item) => item.message)}
-        includeTargetFallbacks={false}
-      />
       {lastTextMessage && !isStreaming && (
         <div className="mx-auto flex w-full max-w-3xl flex-wrap items-center gap-2 px-2 opacity-0 transition-opacity duration-150 group-hover/message-group:opacity-100 max-lg:opacity-100 pointer-coarse:opacity-100 md:px-8">
           <MessageActions className="flex gap-0">
@@ -1269,12 +1263,7 @@ type StandaloneMessageProps = {
 }
 
 const StandaloneMessage = React.memo(function StandaloneMessage(props: StandaloneMessageProps) {
-  return (
-    <div>
-      <MessageComponent {...props} />
-      <ArtifactList messages={[props.message]} includeTargetFallbacks={false} />
-    </div>
-  )
+  return <MessageComponent {...props} />
 })
 
 interface MessageListProps {

@@ -427,7 +427,7 @@ describe("Cloud gateway resolve route", () => {
     })
 
     expect(provisioning.status).toBe(200)
-    await expect(provisioning.json()).resolves.toEqual({ status: "provisioning", url: null, clientToken: null, hostToken: null })
+    await expect(provisioning.json()).resolves.toEqual({ status: "provisioning", url: null, clientToken: null, hostToken: null, expiresAt: null })
 
     const readyWorker = fakeWorker("healthy")
     const store = makeCloudWorkerStore({ tokens: [makeToken(readyWorker.id, "host"), makeToken(readyWorker.id, "client")] })
@@ -455,6 +455,7 @@ describe("Cloud gateway resolve route", () => {
       url: "https://preview.example.test",
       clientToken: "client-token",
       hostToken: "host-token",
+      expiresAt: expect.any(String),
     })
   })
 
@@ -511,6 +512,7 @@ describe("Cloud gateway resolve route", () => {
       url: "https://preview.example.test",
       clientToken: "client-token",
       hostToken: "host-token",
+      expiresAt: expect.any(String),
     })
   })
 
@@ -552,6 +554,7 @@ describe("Cloud gateway resolve route", () => {
       url: "https://preview.example.test",
       clientToken: "client-token",
       hostToken: "host-token",
+      expiresAt: expect.any(String),
       providerSync: { status: "degraded" },
     })
     expect(body).not.toContain(secret)
@@ -593,6 +596,7 @@ describe("Cloud gateway resolve route", () => {
       url: "https://preview.example.test",
       clientToken: "client-token",
       hostToken: "host-token",
+      expiresAt: expect.any(String),
       providerSync: { status: "degraded", reason: "unsupported" },
     })
   })
@@ -1189,17 +1193,24 @@ describe("Cloud instance failed self-heal", () => {
 
 describe("Cloud instance ready liveness", () => {
   test("returns waking and starts wake when the preview is dead and the sandbox is stopped", async () => {
-    const worker = fakeWorker("healthy")
+    const context = organizationContext(JSON.stringify({ capabilities: { cloud: true } }))
+    const worker = storedWorker({
+      orgId: context.organization.id,
+      userId: context.currentMember.userId,
+      status: "healthy",
+    })
+    const store = makeCloudWorkerStore({ initialWorkers: [worker] })
     const app = new Hono<{ Variables: OrgRouteVariables }>()
     let probes = 0
     let wakeCalls = 0
 
     routes.registerCloudRoutes(app, {
-      memberRoute: contextMiddleware(organizationContext(JSON.stringify({ capabilities: { cloud: true } }))),
+      memberRoute: contextMiddleware(context),
       orgMode: "multi_org",
       provisionerMode: "daytona",
       daytonaApiKey: "daytona-test-key",
       ensureCloudWorker: async () => worker,
+      cloudWorkerStore: store.store,
       getSandboxRecord: async () => fakeSandbox(),
       refreshSignedPreview: async () => null,
       probeSignedPreview: async () => {
@@ -1218,6 +1229,7 @@ describe("Cloud instance ready liveness", () => {
     await expect(response.json()).resolves.toEqual(expectedCloudInstance({ status: "waking", url: null }))
     expect(probes).toBe(1)
     expect(wakeCalls).toBe(1)
+    expect(store.recycleClaimAttempts).toBe(1)
   })
 
   test("marks missing sandboxes failed, kicks heal, and reports waking", async () => {

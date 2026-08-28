@@ -68,7 +68,15 @@ The artifact preview keeps **outside-chat Markdown** readable with inline \`surf
 \`\`\`ts
 const surface = "shared markdown primitive";
 console.log(surface);
+\`\`\`
+
+\`\`\`mermaid
+flowchart LR
+  ArtifactStart[Artifact Mermaid Start] --> ArtifactFinish[Artifact Mermaid Finish]
 \`\`\``;
+
+const STANDALONE_MERMAID_ARTIFACT_CONTENT = `flowchart TD
+  StandaloneStart[Standalone Mermaid] --> StandaloneFinish[Rendered artifact]`;
 
 type SidePanelTabProps = {
   tab: PanelTabEntry;
@@ -491,13 +499,16 @@ export function SidePanel({
       description: "Create a deterministic markdown artifact and open it in the preview panel.",
       sideEffect: "mutation",
       disabled: !client || !workspaceId,
-      execute: async () => {
+      execute: async (args) => {
         if (!client || !workspaceId) return { ok: false, error: "Workspace client is not ready." };
 
-        const value = "artifacts/markdown-primitive-proof.md";
+        const standalone = Boolean(args && typeof args === "object" && "standalone" in args && args.standalone);
+        const value = standalone ? "artifacts/standalone-mermaid-proof.mmd" : "artifacts/markdown-primitive-proof.md";
+        const name = standalone ? "standalone-mermaid-proof.mmd" : "markdown-primitive-proof.md";
+        const content = standalone ? STANDALONE_MERMAID_ARTIFACT_CONTENT : MARKDOWN_PRIMITIVE_ARTIFACT_CONTENT;
         await client.writeWorkspaceFile(workspaceId, {
           path: value,
-          content: MARKDOWN_PRIMITIVE_ARTIFACT_CONTENT,
+          content,
           baseUpdatedAt: null,
         });
 
@@ -505,12 +516,12 @@ export function SidePanel({
           id: `file:${value}`,
           kind: "file",
           value,
-          name: "markdown-primitive-proof.md",
+          name,
           preview: "markdown",
           confidence: 100,
           reason: "eval",
           exists: true,
-          size: MARKDOWN_PRIMITIVE_ARTIFACT_CONTENT.length,
+          size: content.length,
         };
 
         const store = usePanelTabStore.getState();

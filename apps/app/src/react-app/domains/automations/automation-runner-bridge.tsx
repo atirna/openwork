@@ -1,6 +1,13 @@
 /** @jsxImportSource react */
 import { useEffect } from "react"
-import { AUTOMATION_MODEL_ATTENTION_CAPABILITY } from "@openwork/types/automations"
+import {
+  AUTOMATION_MODEL_ATTENTION_CAPABILITY,
+  REMOTE_SESSION_DESKTOP_RUNNER_CAPABILITY,
+} from "@openwork/types/automations"
+import type {
+  AutomationDesktopRunnerCapability,
+  AutomationDesktopRunnerRegistration,
+} from "@openwork/types/automations"
 
 import { createDenClient, DenApiError, readDenSettings } from "@/app/lib/den"
 import { denSettingsChangedEvent } from "@/app/lib/den-session-events"
@@ -56,32 +63,44 @@ export function AutomationRunnerBridge() {
           if (!isCurrent()) return
           const agent = navigator.userAgent
           const platform = /Mac/i.test(agent) ? "darwin" : /Win/i.test(agent) ? "win32" : "linux"
-          let runner: Awaited<ReturnType<typeof client.mintAutomationRunnerToken>>
-          try {
-            runner = await client.mintAutomationRunnerToken(organizationId, {
-              runnerId,
+          const mintRunner = async (id: string) => {
+            const registration = (
+              capabilities: AutomationDesktopRunnerCapability[],
+            ): AutomationDesktopRunnerRegistration => ({
+              runnerId: id,
               protocolVersion: 1,
               supportedExecutionTargets: ["desktop"],
-              capabilities: [AUTOMATION_MODEL_ATTENTION_CAPABILITY],
+              capabilities,
               appVersion: String(build?.version ?? "unknown"),
               platform,
               concurrency: 1,
             })
+            try {
+              return await client.mintAutomationRunnerToken(organizationId, registration([
+                AUTOMATION_MODEL_ATTENTION_CAPABILITY,
+                REMOTE_SESSION_DESKTOP_RUNNER_CAPABILITY,
+              ]))
+            } catch (error) {
+              // Older/self-hosted Den versions accept at most the original
+              // capability. Preserve existing Automation delivery until that
+              // server upgrades; it will not advertise remote-session presence.
+              if (!(error instanceof DenApiError) || error.status !== 400) throw error
+              return client.mintAutomationRunnerToken(
+                organizationId,
+                registration([AUTOMATION_MODEL_ATTENTION_CAPABILITY]),
+              )
+            }
+          }
+          let runner: Awaited<ReturnType<typeof client.mintAutomationRunnerToken>>
+          try {
+            runner = await mintRunner(runnerId)
           } catch (error) {
             if (!(error instanceof DenApiError) || error.status !== 409 || error.code !== "automation_runner_identity_conflict") {
               throw error
             }
             if (!isCurrent()) return
             runnerId = resetDesktopRunnerId()
-            runner = await client.mintAutomationRunnerToken(organizationId, {
-              runnerId,
-              protocolVersion: 1,
-              supportedExecutionTargets: ["desktop"],
-              capabilities: [AUTOMATION_MODEL_ATTENTION_CAPABILITY],
-              appVersion: String(build?.version ?? "unknown"),
-              platform,
-              concurrency: 1,
-            })
+            runner = await mintRunner(runnerId)
           }
           if (!isCurrent()) return
           await window.__OPENWORK_ELECTRON__?.invokeDesktop?.("automationRunnerConfigure", {

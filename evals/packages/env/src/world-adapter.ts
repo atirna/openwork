@@ -11,6 +11,7 @@ import type {
   WorldStartRequest,
 } from "@openwork/world";
 import type { WorldTopology } from "./topology.ts";
+import type { WorldLlmProviderRuntime } from "./world.ts";
 
 const REPO_ROOT = fileURLToPath(new URL("../../../..", import.meta.url));
 const SNAPSHOT_DIRECTORY = join(REPO_ROOT, "evals", "results", ".worlds");
@@ -19,10 +20,16 @@ function displayLines(
   topology: WorldTopology,
   den: { ref: { apiUrl: string; webUrl: string } },
   apps: Record<string, { handle: { cdpUrl: string } }>,
+  llmProviders: Record<string, WorldLlmProviderRuntime> = {},
 ): string[] {
   const lines: string[] = [];
   if (!usesLiveSharedProductionState(topology)) {
     lines.push(`den web  ${den.ref.webUrl}`, `den api  ${den.ref.apiUrl}`);
+  }
+  for (const [name, provider] of Object.entries(llmProviders)) {
+    lines.push(
+      `litellm ${name}  ${provider.baseUrl}  model ${provider.modelId}  limits ${provider.maxInputTokens}/${provider.maxOutputTokens}  Den ${provider.providerRecordId}`,
+    );
   }
   for (const [name, app] of Object.entries(apps)) {
     const signedInTo = topology.apps?.[name]?.signedInTo;
@@ -54,7 +61,7 @@ async function start(request: WorldStartRequest): Promise<StartedWorldRuntime> {
   });
   return {
     name: world.name,
-    lines: displayLines(topology, world.den, world.apps),
+    lines: displayLines(topology, world.den, world.apps, world.llmProviders),
     ...(usesLiveSharedProductionState(topology) ? { sharedState: true } : {}),
     snapshotPath: world.snapshotPath,
     async detach() {

@@ -4,23 +4,23 @@ description: "Open a full OpenWork instance in your browser with nothing to inst
 ---
 
 <Warning>
-**Alpha: customer-only access.** OpenWork Web is available only to customers in the alpha. Email [team@openworklabs.com](mailto:team@openworklabs.com) to request access. The price is **$50 per hosted instance**.
+**Hosted access.** OpenWork Web is available to every organization when an OpenWork-hosted deployment explicitly enables it. Web billing must also be configured before an owner or admin can purchase it. It costs **$50 per joined organization member per month**; pending invitations are not billed until they are accepted.
 </Warning>
 
-OpenWork Web is currently available for select customers. When your organization has it enabled, you can open a full OpenWork instance in your browser. There is nothing to install and nothing to set up on your computer.
+Open `/dashboard/web` to see the price, billable member quantity, expected monthly total, and purchase action. Access opens only after the organization's subscription is confirmed.
 
 ## Who can use it
 
-OpenWork Web is enabled per organization. If you do not see it in the sidebar, your organization does not have access yet — email [team@openworklabs.com](mailto:team@openworklabs.com) to request it.
+Every joined member can see OpenWork Web when the hosted deployment offers it. An organization owner or admin purchases the subscription; all joined members receive access after it becomes active.
 
-OpenWork Web is only available on hosted OpenWork organizations. It is not available on self-hosted deployments.
+Self-hosted deployments do not show OpenWork Web by default: a missing or false `DEN_OPENWORK_WEB_ENABLED` value fails closed. If you use an OpenWork-hosted organization and do not see it in the sidebar, email [team@openworklabs.com](mailto:team@openworklabs.com) so the deployment configuration can be checked.
 
 ## Open OpenWork Web
 
 1. Sign in to your organization dashboard.
 2. Click `OpenWork Web` in the sidebar.
-3. Wait a few seconds while the workspace starts.
-4. Open the new browser tab when it is ready.
+3. If prompted, purchase OpenWork Web and wait for the subscription to be confirmed.
+4. Click `Open OpenWork Web`.
 
 <Frame>
   ![The OpenWork Web page in the organization dashboard with the Open OpenWork Web button](/images/cloud-openwork-web.png)

@@ -1,24 +1,31 @@
 import { createHeadlessThreadClient, toTranscript, type HeadlessThreadClient, type HeadlessThreadModel } from "@openwork/headless-threads"
-import { and, asc, eq } from "@openwork-ee/den-db/drizzle"
-import { OrganizationTable, WorkerTable } from "@openwork-ee/den-db/schema"
-import { normalizeDenTypeId, type DenTypeId } from "@openwork-ee/utils/typeid"
+import { and, eq, isNull } from "@openwork-ee/den-db/drizzle"
+import { MemberTable, OrganizationTable } from "@openwork-ee/den-db/schema/org"
+import { createDenTypeId, normalizeDenTypeId, type DenTypeId } from "@openwork-ee/utils/typeid"
 import { z } from "zod"
+import { desktopRunnerConnected } from "@openwork/automations"
+import { REMOTE_SESSION_DESKTOP_RUNNER_CAPABILITY } from "@openwork/types/automations"
 import { db } from "../db.js"
 import { env } from "../env.js"
+// The automation repository is the presence source of truth. Importing the
+// automation service instead would pull the codemode execution graph (and
+// its `effect` dependency) into every spec that imports this module, which
+// the evals layer rules forbid.
+import { automationRepository } from "../automations/repository.js"
 import { organizationCloudEnabled } from "../capability-sources/cloud-rollout.js"
-import { CLOUD_INSTANCE_BACKEND } from "../workers/cloud-constants.js"
-import { wakeCloudWorker } from "../workers/cloud-lifecycle.js"
-import { loadCloudWorkerAccess, type CloudWorkerAccess } from "../workers/worker-access.js"
+import {
+  databaseRemoteSessionCommandStore,
+  DEFAULT_TTL_MS,
+  type RemoteSessionCommandStore,
+} from "../remote-sessions/commands.js"
+import { resolveCloudRuntimeAccess, type CloudWorkerAccess } from "../workers/worker-access.js"
+import { fetchPreviewNoRedirect, previewFetch } from "../workers/preview-fetch.js"
 import { scoreText, tokenize, type CapabilityMatch } from "./search.js"
 
 /**
  * Remote sessions over the capability gateway: create and drive a native
- * OpenWork session on the member's own OpenWork Cloud worker — the same
- * session store OpenWork Web renders — from any MCP client.
- *
- * v1 supports `target: "cloud"` only. The desktop target rides the runner
- * dispatch seam and is intentionally not wired here yet
- * (docs/remote-chat-over-mcp-architecture.md).
+ * OpenWork session on the member's OpenWork Cloud worker or connected
+ * desktop — from any MCP client.
  */
 
 export const REMOTE_SESSION_CAPABILITY_PREFIX = "remote-session:"
@@ -43,7 +50,7 @@ const modelSchema = z.object({
 
 const createBodySchema = z.object({
   target: z.enum(["cloud", "desktop"]).optional(),
-  title: z.string().trim().min(1).max(200).optional(),
+  title: z.string().trim().min(1).max(120).optional(),
   prompt: z.string().min(1).max(100_000).optional(),
   model: modelSchema.optional(),
 })
@@ -55,8 +62,16 @@ const sendBodySchema = z.object({
 })
 
 const readBodySchema = z.object({
-  sessionId: z.string().trim().min(1),
+  sessionId: z.string().trim().min(1).optional(),
+  commandId: z.string().trim().min(1).optional(),
   limit: z.number().int().min(1).max(100).optional(),
+}).superRefine((body, context) => {
+  if (Number(body.sessionId !== undefined) + Number(body.commandId !== undefined) !== 1) {
+    context.addIssue({
+      code: z.ZodIssueCode.custom,
+      message: "Exactly one of sessionId or commandId is required.",
+    })
+  }
 })
 
 const BODY_SCHEMAS: Record<RemoteSessionAction, z.ZodTypeAny> = {
@@ -86,14 +101,14 @@ const REMOTE_SESSION_DEFINITIONS: RemoteSessionDefinition[] = [
   {
     action: "create",
     summary:
-      "Create a chat session on your OpenWork Cloud workspace. The session appears live in OpenWork Web. Optionally start it with a first prompt.",
+      "Create a chat session on your OpenWork Cloud workspace or queue one for your connected OpenWork desktop. Optionally start it with a first prompt.",
     searchExtraTokens:
-      "remote session sessions chat thread cloud web create start new handoff continue browser workspace",
+      "remote session sessions chat thread cloud web desktop create start new handoff continue browser workspace",
     argumentsSchema: {
       type: "object",
       properties: {
-        target: { type: "string", enum: ["cloud"], description: "Execution target. Only \"cloud\" is supported today." },
-        title: { type: "string", description: "Session title shown in OpenWork Web." },
+        target: { type: "string", enum: ["cloud", "desktop"], description: "Execution target. Defaults to \"cloud\"." },
+        title: { type: "string", maxLength: 120, description: "Session title shown in OpenWork." },
         prompt: { type: "string", description: "Optional first prompt. When present the session starts working immediately." },
         model: MODEL_ARGUMENT_SCHEMA,
       },
@@ -118,16 +133,17 @@ const REMOTE_SESSION_DEFINITIONS: RemoteSessionDefinition[] = [
   {
     action: "read",
     summary:
-      "Read the status and recent transcript of a remote session on your OpenWork Cloud workspace.",
+      "Read the status of a queued desktop command or the recent transcript of a remote session on your OpenWork Cloud workspace.",
     searchExtraTokens:
       "remote session sessions chat thread cloud web read transcript status reply answer poll result",
     argumentsSchema: {
       type: "object",
       properties: {
         sessionId: { type: "string", description: "Session id returned by remote-session:create." },
+        commandId: { type: "string", description: "Desktop command id returned by remote-session:create." },
         limit: { type: "number", description: "Maximum number of recent messages to return. Defaults to 20, max 100." },
       },
-      required: ["sessionId"],
+      oneOf: [{ required: ["sessionId"] }, { required: ["commandId"] }],
     },
   },
 ]
@@ -180,7 +196,7 @@ export type RemoteSessionRuntimeResult =
   | { ok: true; runtime: RemoteSessionRuntime }
   | {
       ok: false
-      error: "cloud_not_available" | "needs_cloud_setup" | "cloud_runtime_failed" | "cloud_runtime_waking"
+      error: "cloud_not_available" | "needs_cloud_setup" | "cloud_runtime_failed" | "cloud_runtime_waking" | "cloud_runtime_unreachable"
       message: string
       retryable: boolean
     }
@@ -190,6 +206,11 @@ export type RemoteSessionThreadClient = Pick<HeadlessThreadClient, "createThread
 export type RemoteSessionExecuteDeps = {
   resolveRuntime: (scope: { organizationId: DenTypeId<"organization">; userId: string }) => Promise<RemoteSessionRuntimeResult>
   createClient: (runtime: RemoteSessionRuntime) => RemoteSessionThreadClient
+  commandStore: RemoteSessionCommandStore
+  desktopPresence: (scope: {
+    organizationId: DenTypeId<"organization">
+    userId: string
+  }) => Promise<{ connected: boolean; ownerMemberId: string | null }>
 }
 
 export type RemoteSessionToolResult = {
@@ -241,38 +262,24 @@ function workerHeaders(access: CloudWorkerAccess) {
   }
 }
 
-async function readWorkspace(access: CloudWorkerAccess) {
-  for (const baseUrl of access.candidates) {
-    try {
-      const response = await fetch(`${baseUrl}/workspaces`, {
-        headers: workerHeaders(access),
-        signal: AbortSignal.timeout(WORKER_REQUEST_TIMEOUT_MS),
-      })
-      if (!response.ok) continue
-      const payload: unknown = await response.json()
-      if (isRecord(payload) && typeof payload.activeId === "string" && payload.activeId) {
-        return { baseUrl, workspaceId: payload.activeId }
-      }
-    } catch {
-      // Try the next candidate URL; readiness is re-polled by the caller.
+export async function resolveRemoteSessionWorkspace(
+  access: CloudWorkerAccess,
+  fetchImpl: typeof fetch = fetch,
+) {
+  try {
+    const response = await fetchPreviewNoRedirect(fetchImpl, `${access.url}/workspaces`, {
+      headers: workerHeaders(access),
+      signal: AbortSignal.timeout(WORKER_REQUEST_TIMEOUT_MS),
+    })
+    if (!response.ok) return null
+    const payload: unknown = await response.json()
+    if (isRecord(payload) && typeof payload.activeId === "string" && payload.activeId) {
+      return { baseUrl: access.url, workspaceId: payload.activeId }
     }
+  } catch {
+    return null
   }
   return null
-}
-
-async function ownerCloudWorker(scope: { organizationId: DenTypeId<"organization">; userId: string }) {
-  const workers = await db
-    .select({ id: WorkerTable.id, status: WorkerTable.status })
-    .from(WorkerTable)
-    .where(and(
-      eq(WorkerTable.org_id, scope.organizationId),
-      eq(WorkerTable.created_by_user_id, normalizeDenTypeId("user", scope.userId)),
-      eq(WorkerTable.destination, "cloud"),
-      eq(WorkerTable.sandbox_backend, CLOUD_INSTANCE_BACKEND),
-    ))
-    .orderBy(asc(WorkerTable.created_at), asc(WorkerTable.id))
-    .limit(1)
-  return workers[0] ?? null
 }
 
 async function defaultResolveRuntime(
@@ -290,30 +297,38 @@ async function defaultResolveRuntime(
     return { ok: false, error: "cloud_not_available", message: CLOUD_NOT_AVAILABLE_MESSAGE, retryable: false }
   }
 
-  const worker = await ownerCloudWorker(scope)
-  if (!worker) {
-    return { ok: false, error: "needs_cloud_setup", message: NEEDS_SETUP_MESSAGE, retryable: false }
-  }
-  if (worker.status === "failed") {
-    return {
-      ok: false,
-      error: "cloud_runtime_failed",
-      message: "Your OpenWork Cloud workspace needs repair before remote sessions can run. Open OpenWork Cloud in the browser to let it recover, then retry.",
-      retryable: false,
-    }
-  }
-
   const deadline = Date.now() + READY_BUDGET_MS
-  let wakeKicked = false
   for (;;) {
-    const access = await loadCloudWorkerAccess({ organizationId: scope.organizationId, workerId: worker.id })
-    if (access) {
-      const workspace = await readWorkspace(access)
+    const access = await resolveCloudRuntimeAccess({
+      organizationId: scope.organizationId,
+      userId: normalizeDenTypeId("user", scope.userId),
+    })
+    if (access.status === "missing") {
+      return { ok: false, error: "needs_cloud_setup", message: NEEDS_SETUP_MESSAGE, retryable: false }
+    }
+    if (access.status !== "ready" && access.reason === "unreachable") {
+      return {
+        ok: false,
+        error: "cloud_runtime_unreachable",
+        message: "Your OpenWork Cloud workspace is running but cannot be reached right now. Retry after the network path recovers.",
+        retryable: true,
+      }
+    }
+    if (access.status === "failed") {
+      return {
+        ok: false,
+        error: "cloud_runtime_failed",
+        message: "Your OpenWork Cloud workspace needs repair before remote sessions can run. Open OpenWork Cloud in the browser to let it recover, then retry.",
+        retryable: false,
+      }
+    }
+    if (access.status === "ready") {
+      const workspace = await resolveRemoteSessionWorkspace(access)
       if (workspace) {
         return {
           ok: true,
           runtime: {
-            workerId: worker.id,
+            workerId: access.workerId,
             baseUrl: workspace.baseUrl,
             workspaceId: workspace.workspaceId,
             clientToken: access.clientToken,
@@ -321,11 +336,12 @@ async function defaultResolveRuntime(
           },
         }
       }
-    } else if (!wakeKicked) {
-      // Stopped or provisioning worker: kick the shared wake path once.
-      // `wakeCloudWorker` dedupes in-flight wakes per worker.
-      wakeKicked = true
-      void wakeCloudWorker(worker.id).catch(() => undefined)
+      return {
+        ok: false,
+        error: "cloud_runtime_unreachable",
+        message: "Your OpenWork Cloud workspace is healthy but its session API cannot be reached right now. Retry after the network path recovers.",
+        retryable: true,
+      }
     }
     if (Date.now() >= deadline) break
     await sleep(READY_POLL_MS)
@@ -346,12 +362,34 @@ function defaultCreateClient(runtime: RemoteSessionRuntime): RemoteSessionThread
     token: runtime.clientToken,
     hostToken: runtime.hostToken,
     requestTimeoutMs: WORKER_REQUEST_TIMEOUT_MS,
+    fetch: (url, init = {}) => fetchPreviewNoRedirect(previewFetch(), url, init),
   })
+}
+
+async function defaultDesktopPresence(scope: {
+  organizationId: DenTypeId<"organization">
+  userId: string
+}): Promise<{ connected: boolean; ownerMemberId: string | null }> {
+  const members = await db.select({ id: MemberTable.id }).from(MemberTable).where(and(
+    eq(MemberTable.organizationId, scope.organizationId),
+    eq(MemberTable.userId, normalizeDenTypeId("user", scope.userId)),
+    isNull(MemberTable.removedAt),
+  )).limit(1)
+  const ownerMemberId = members[0]?.id ?? null
+  if (!ownerMemberId) return { connected: false, ownerMemberId: null }
+  const lastSeenAt = await automationRepository.desktopRunnerCapabilityLastSeenAt({
+    organizationId: scope.organizationId,
+    ownerMemberId,
+    capability: REMOTE_SESSION_DESKTOP_RUNNER_CAPABILITY,
+  })
+  return { connected: desktopRunnerConnected({ lastSeenAt, now: Date.now() }), ownerMemberId }
 }
 
 export const DEFAULT_REMOTE_SESSION_DEPS: RemoteSessionExecuteDeps = {
   resolveRuntime: defaultResolveRuntime,
   createClient: defaultCreateClient,
+  commandStore: databaseRemoteSessionCommandStore,
+  desktopPresence: defaultDesktopPresence,
 }
 
 function jsonResult(payload: Record<string, unknown>, isError = false): RemoteSessionToolResult {
@@ -433,10 +471,50 @@ export async function executeRemoteSessionCapability(
   if (input.action === "create") {
     const body = createBodySchema.parse(parsedBody.data)
     if (body.target === "desktop") {
-      return errorResult({
-        error: "unsupported_target",
-        message: "target \"desktop\" is not available yet. Only target \"cloud\" is supported; omit target or pass \"cloud\".",
-        retryable: false,
+      const presence = await deps.desktopPresence({ organizationId: input.organizationId, userId: input.userId })
+      if (!presence.connected || !presence.ownerMemberId) {
+        return errorResult({
+          error: "desktop_offline",
+          message: "No desktop is connected for your account. Open the OpenWork desktop app and try again.",
+        })
+      }
+      const command = await deps.commandStore.enqueue({
+        organizationId: input.organizationId,
+        ownerMemberId: presence.ownerMemberId,
+        createdByUserId: input.userId,
+        title: body.title ?? "Remote session",
+        ...(body.prompt === undefined ? {} : { prompt: body.prompt }),
+        ...(body.model === undefined ? {} : { model: body.model }),
+        ttlMs: DEFAULT_TTL_MS,
+        idempotencyKey: createDenTypeId("remoteSessionCommand"),
+      })
+      return jsonResult({
+        target: "desktop",
+        state: "queued",
+        commandId: command.id,
+        expiresAt: command.expiresAt,
+      })
+    }
+  }
+
+  if (input.action === "read") {
+    const body = readBodySchema.parse(parsedBody.data)
+    if (body.commandId) {
+      const command = await deps.commandStore.get({
+        commandId: body.commandId,
+        organizationId: input.organizationId,
+        createdByUserId: input.userId,
+      })
+      if (!command) return errorResult({ error: "unknown_command" })
+      return jsonResult({
+        commandId: command.id,
+        target: "desktop",
+        state: command.status,
+        sessionId: command.sessionId,
+        workspaceId: command.workspaceId,
+        resultSummary: command.resultSummary,
+        error: command.error,
+        expiresAt: command.expiresAt,
       })
     }
   }
@@ -495,6 +573,7 @@ export async function executeRemoteSessionCapability(
   }
 
   const body = readBodySchema.parse(parsedBody.data)
+  if (!body.sessionId) throw new Error("remote_session_read_body_invariant")
   try {
     const snapshot = await client.getThreadSnapshot(body.sessionId)
     const transcript = toTranscript(snapshot)

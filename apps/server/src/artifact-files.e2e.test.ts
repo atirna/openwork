@@ -21,6 +21,7 @@ async function createWorkspaceRoot() {
   roots.push(root);
   await mkdir(join(root, "reports"), { recursive: true });
   await writeFile(join(root, "reports", "artifact-eval.md"), "# Artifact Eval\n\nHello markdown.\n", "utf8");
+  await writeFile(join(root, "reports", "architecture.mmd"), "flowchart LR\n  A --> B\n", "utf8");
   await writeFile(join(root, "reports", "artifact-eval.csv"), "name,revenue\nAda,10\nGrace,20\n", "utf8");
   await writeFile(join(root, "reports", "index.html"), "<!doctype html><h1>Artifact site</h1>", "utf8");
   await writeFile(join(root, "reports", "artifact-eval.ts"), "export const artifact = true;\n", "utf8");
@@ -70,6 +71,7 @@ describe("artifact file routes", () => {
         targets: [
           { kind: "file", value: join(root, "reports", "artifact-eval.md"), confidence: 95 },
           { kind: "file", value: "Workspace/32423/reports/artifact-eval.md", confidence: 80 },
+          { kind: "file", value: "reports/architecture.mmd", confidence: 80 },
           { kind: "file", value: "reports/artifact-eval.csv", confidence: 80 },
           { kind: "file", value: "reports/artifact-eval.xlsx", confidence: 80 },
           { kind: "file", value: "reports/artifact-eval.pptx", confidence: 80 },
@@ -85,6 +87,7 @@ describe("artifact file routes", () => {
     expect(resolveResponse.status).toBe(200);
     const resolved = await resolveResponse.json() as { items: Array<any> };
     expect(resolved.items.find((item) => item.value === "reports/artifact-eval.md")).toMatchObject({ exists: true, preview: "markdown", confidence: 95 });
+    expect(resolved.items.find((item) => item.value === "reports/architecture.mmd")).toMatchObject({ exists: true, preview: "markdown", contentType: "text/plain; charset=utf-8" });
     expect(resolved.items.find((item) => item.value === "reports/artifact-eval.csv")).toMatchObject({ exists: true, preview: "sheet" });
     expect(resolved.items.find((item) => item.value === "reports/artifact-eval.xlsx")).toMatchObject({ exists: true, preview: "sheet" });
     expect(resolved.items.find((item) => item.value === "reports/artifact-eval.pptx")).toMatchObject({ exists: true, preview: "slides", contentType: "application/vnd.openxmlformats-officedocument.presentationml.presentation" });
@@ -97,6 +100,9 @@ describe("artifact file routes", () => {
 
     const csvRead = await fetch(`${base}/workspace/ws_1/files/content?path=${encodeURIComponent("reports/artifact-eval.csv")}`, { headers: auth(token) });
     expect(await csvRead.json()).toMatchObject({ content: "name,revenue\nAda,10\nGrace,20\n" });
+
+    const mermaidRead = await fetch(`${base}/workspace/ws_1/files/content?path=${encodeURIComponent("reports/architecture.mmd")}`, { headers: auth(token) });
+    expect(await mermaidRead.json()).toMatchObject({ content: "flowchart LR\n  A --> B\n" });
 
     const mdWrite = await fetch(`${base}/workspace/ws_1/files/content`, {
       method: "POST",

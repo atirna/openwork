@@ -190,7 +190,7 @@ export interface HeadlessThreadClient {
  */
 export type HeadlessFetch = (
   input: string,
-  init?: { method?: string; headers?: Record<string, string>; body?: string; signal?: AbortSignal },
+  init?: { method?: string; headers?: Record<string, string>; body?: string; redirect?: RequestRedirect; signal?: AbortSignal },
 ) => Promise<Response>;
 
 export interface HeadlessThreadClientOptions {
@@ -199,7 +199,7 @@ export interface HeadlessThreadClientOptions {
   workspaceId: string;
   /** A collaborator-scoped OpenWork client token. */
   token: string;
-  /** Host credential for server-to-server execution through the Cloud worker proxy. */
+  /** Host credential for server-to-server execution against the resolved Cloud runtime. */
   hostToken?: string;
   /** Model used when a call does not name one. */
   defaultModel?: HeadlessThreadModel;

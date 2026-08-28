@@ -8,7 +8,7 @@ set -euo pipefail
 #   bash .devcontainer/test-server-on-daytona.sh [branch-or-commit] --force-install
 #   bash .devcontainer/test-server-on-daytona.sh [branch-or-commit] --seed
 #
-# Creates a Daytona sandbox, starts MySQL + Den API + Den Web + worker proxy,
+# Creates a Daytona sandbox, starts MySQL + Den API + Den Web,
 # waits for health checks, and prints public preview URLs.
 
 REF=""
@@ -22,7 +22,6 @@ DAYTONA_SERVER_SNAPSHOT="${DAYTONA_SERVER_SNAPSHOT:-openwork-server}"
 DAYTONA_TARGET="${DAYTONA_TARGET:-us}"
 DEN_API_PORT="${DEN_API_PORT:-8788}"
 DEN_WEB_PORT="${DEN_WEB_PORT:-3005}"
-DEN_WORKER_PROXY_PORT="${DEN_WORKER_PROXY_PORT:-8789}"
 MAX_WAIT="${DAYTONA_SERVER_MAX_WAIT:-240}"
 DEN_GENERATED_ARTIFACT_VIEWS_ENABLED="${DEN_GENERATED_ARTIFACT_VIEWS_ENABLED:-}"
 if [ -z "$DEN_GENERATED_ARTIFACT_VIEWS_ENABLED" ]; then
@@ -120,7 +119,6 @@ fi
 
 DEN_WEB_URL="$(daytona preview-url "$SANDBOX" -p "$DEN_WEB_PORT" --expires 86400 2>/dev/null | grep -v "^time=")"
 DEN_API_URL="$(daytona preview-url "$SANDBOX" -p "$DEN_API_PORT" --expires 86400 2>/dev/null | grep -v "^time=")"
-DEN_WORKER_PROXY_URL="$(daytona preview-url "$SANDBOX" -p "$DEN_WORKER_PROXY_PORT" --expires 86400 2>/dev/null | grep -v "^time=")"
 
 # These exact URLs become the Den's public identity (OAuth issuer + MCP
 # resource). Every `daytona preview-url` call signs a fresh hostname, so a
@@ -130,8 +128,8 @@ DEN_WORKER_PROXY_URL="$(daytona preview-url "$SANDBOX" -p "$DEN_WORKER_PROXY_POR
 # write happens on the runner from daytona CLI output only, so sandbox (ref
 # controlled) output can never influence it.
 if [ -n "${OPENWORK_DEN_URLS_FILE:-}" ]; then
-  printf 'DEN_WEB_URL=%s\nDEN_API_URL=%s\nDEN_WORKER_PROXY_URL=%s\n' \
-    "$DEN_WEB_URL" "$DEN_API_URL" "$DEN_WORKER_PROXY_URL" > "$OPENWORK_DEN_URLS_FILE"
+  printf 'DEN_WEB_URL=%s\nDEN_API_URL=%s\n' \
+    "$DEN_WEB_URL" "$DEN_API_URL" > "$OPENWORK_DEN_URLS_FILE"
 fi
 
 echo "==> Checking out $REF..."
@@ -143,7 +141,7 @@ daytona exec "$SANDBOX" -- "bash -lc 'set -euo pipefail; cd /workspace; mkdir -p
 
 echo "==> Starting OpenWork Den server stack..."
 BOOTSTRAP_ADMIN_EMAILS_B64="$(printf %s "${DEN_BOOTSTRAP_ADMIN_EMAILS:-}" | base64 | tr -d '\n')"
-daytona exec "$SANDBOX" -- "bash -lc 'set -euo pipefail; cd /workspace; DEN_BOOTSTRAP_ADMIN_EMAILS=\"\$(printf %s $BOOTSTRAP_ADMIN_EMAILS_B64 | base64 -d)\" DEN_GENERATED_ARTIFACT_VIEWS_ENABLED=\"$DEN_GENERATED_ARTIFACT_VIEWS_ENABLED\" DEN_WEB_PUBLIC_URL=\"$DEN_WEB_URL\" DEN_API_PUBLIC_URL=\"$DEN_API_URL\" DEN_WORKER_PROXY_PUBLIC_URL=\"$DEN_WORKER_PROXY_URL\" DEN_WEB_PORT=$DEN_WEB_PORT DEN_API_PORT=$DEN_API_PORT DEN_WORKER_PROXY_PORT=$DEN_WORKER_PROXY_PORT RUN_SEED=$RUN_SEED bash .devcontainer/start-daytona-server.sh'"
+daytona exec "$SANDBOX" -- "bash -lc 'set -euo pipefail; cd /workspace; DEN_BOOTSTRAP_ADMIN_EMAILS=\"\$(printf %s $BOOTSTRAP_ADMIN_EMAILS_B64 | base64 -d)\" DEN_GENERATED_ARTIFACT_VIEWS_ENABLED=\"$DEN_GENERATED_ARTIFACT_VIEWS_ENABLED\" DEN_WEB_PUBLIC_URL=\"$DEN_WEB_URL\" DEN_API_PUBLIC_URL=\"$DEN_API_URL\" DEN_WEB_PORT=$DEN_WEB_PORT DEN_API_PORT=$DEN_API_PORT RUN_SEED=$RUN_SEED bash .devcontainer/start-daytona-server.sh'"
 
 echo "==> Waiting for public Den Web health (up to ${MAX_WAIT}s)..."
 elapsed=0
@@ -163,7 +161,6 @@ if [ "$elapsed" -ge "$MAX_WAIT" ]; then
   echo "Check logs:" >&2
   echo "  daytona exec $SANDBOX -- 'tail -120 /tmp/den-api.log'" >&2
   echo "  daytona exec $SANDBOX -- 'tail -120 /tmp/den-web.log'" >&2
-  echo "  daytona exec $SANDBOX -- 'tail -120 /tmp/den-worker-proxy.log'" >&2
   exit 1
 fi
 
@@ -173,7 +170,6 @@ echo "  Server sandbox ready: $SANDBOX"
 echo ""
 echo "  Den Web:       $DEN_WEB_URL"
 echo "  Den API:       $DEN_API_URL"
-echo "  Worker Proxy:  $DEN_WORKER_PROXY_URL"
 echo ""
 echo "  Start Electron against this server:"
 echo "    bash .devcontainer/test-on-daytona.sh $REF --den-base-url $DEN_WEB_URL --den-api-base-url $DEN_API_URL"

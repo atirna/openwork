@@ -57,7 +57,7 @@ export type CloudProviderSyncSkippedProvider = {
   providerId: string;
   name: string;
   /** Why materialization skipped this provider (e.g. declared env vars but no credential to fill them). */
-  reason: "missing_credentials";
+  reason: "missing_credentials" | "needs_key";
 };
 
 export type CloudProviderSyncRunDetail = {
@@ -111,6 +111,7 @@ type DenProvider = {
 type DenProviderConnection = DenProvider & {
   apiKey: string | null;
   apiKeys: Record<string, string> | null;
+  memberCredentialState: "missing" | "active" | "blocked" | "stale" | "error" | null;
 };
 
 type EnvEntry = {
@@ -284,10 +285,23 @@ function parseProviderConnection(payload: unknown, expectedId: string): DenProvi
   if (!provider || provider.id !== expectedId) {
     throw new Error(`den_llm_provider_connect_invalid_response_${expectedId}`);
   }
+  const memberCredential = payload.llmProvider.memberCredential;
+  const memberCredentialState = isRecord(memberCredential)
+    && (memberCredential.state === "missing"
+      || memberCredential.state === "active"
+      || memberCredential.state === "blocked"
+      || memberCredential.state === "stale"
+      || memberCredential.state === "error")
+    ? memberCredential.state
+    : null;
+  if (memberCredential !== undefined && memberCredentialState === null) {
+    throw new Error(`den_llm_provider_connect_invalid_response_${expectedId}`);
+  }
   return {
     ...provider,
     apiKey: typeof payload.llmProvider.apiKey === "string" ? payload.llmProvider.apiKey : null,
     apiKeys: parseApiKeys(payload.llmProvider.apiKeys),
+    memberCredentialState,
   };
 }
 
@@ -457,6 +471,15 @@ function prepareMaterialization(providers: DenProviderConnection[]): PreparedMat
   const materialized: MaterializedProvider[] = [];
   const skipped: CloudProviderSyncSkippedProvider[] = [];
   for (const provider of providers) {
+    if (provider.memberCredentialState && provider.memberCredentialState !== "active") {
+      skipped.push({
+        cloudProviderId: provider.id,
+        providerId: runtimeProviderId(provider),
+        name: provider.name,
+        reason: "needs_key",
+      });
+      continue;
+    }
     const envEntries = providerEnvEntries(provider);
     const envNames = readProviderEnvNames(provider.providerConfig);
     if (envNames.length > 0 && !envEntries.some((entry) => envNames.includes(entry.key))) {

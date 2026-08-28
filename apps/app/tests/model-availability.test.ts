@@ -4,6 +4,8 @@ import type { ProviderListResponse } from "@opencode-ai/sdk/v2/client";
 import type { ProviderListItem } from "../src/app/types";
 import {
   computeModelAvailability,
+  createUnavailableConfirmationGate,
+  type ModelAvailability,
   type ModelAvailabilityContext,
 } from "../src/react-app/domains/session/surface/model-availability";
 
@@ -168,5 +170,72 @@ describe("computeModelAvailability", () => {
       status: "unavailable",
       reason: "model_missing",
     });
+  });
+});
+
+describe("createUnavailableConfirmationGate", () => {
+  const missing: ModelAvailability = { status: "unavailable", reason: "model_missing" };
+  const available: ModelAvailability = { status: "available" };
+  const pending: ModelAvailability = { status: "pending" };
+
+  function gateAt(startMs: number, confirmMs = 1_000) {
+    let nowMs = startMs;
+    const gate = createUnavailableConfirmationGate({ confirmMs, now: () => nowMs });
+    return { gate, advance: (ms: number) => { nowMs += ms; }, nowMs: () => nowMs };
+  }
+
+  test("a transient catalog denial renders as pending, never unavailable", () => {
+    const { gate, advance } = gateAt(10_000);
+    // Settings→thread transition: the catalog settles briefly without the model.
+    expect(gate.confirm(sessionModel, missing)).toEqual(pending);
+    advance(300);
+    expect(gate.confirm(sessionModel, missing)).toEqual(pending);
+    // The next refresh restores the model before the window matures.
+    advance(300);
+    expect(gate.confirm(sessionModel, available)).toEqual(available);
+    // The denial history is cleared: a later blip starts a fresh window.
+    advance(5_000);
+    expect(gate.confirm(sessionModel, missing)).toEqual(pending);
+  });
+
+  test("a genuine denial surfaces once it survives the confirmation window", () => {
+    const { gate, advance } = gateAt(10_000);
+    expect(gate.confirm(sessionModel, missing)).toEqual(pending);
+    advance(1_000);
+    expect(gate.confirm(sessionModel, missing)).toEqual(missing);
+    // Steady state stays denied without flicker.
+    advance(50);
+    expect(gate.confirm(sessionModel, missing)).toEqual(missing);
+  });
+
+  test("nextRecheckDelay schedules exactly the remaining confirmation time", () => {
+    const { gate, advance, nowMs } = gateAt(10_000);
+    expect(gate.nextRecheckDelay(nowMs())).toBeNull();
+    gate.confirm(sessionModel, missing);
+    expect(gate.nextRecheckDelay(nowMs())).toBe(1_000);
+    advance(400);
+    expect(gate.nextRecheckDelay(nowMs())).toBe(600);
+    advance(700);
+    expect(gate.nextRecheckDelay(nowMs())).toBe(0);
+    // A recovered model clears the tracked denial.
+    gate.confirm(sessionModel, available);
+    expect(gate.nextRecheckDelay(nowMs())).toBeNull();
+  });
+
+  test("denials are tracked per model identity", () => {
+    const { gate, advance } = gateAt(10_000);
+    expect(gate.confirm(sessionModel, missing)).toEqual(pending);
+    advance(1_000);
+    // The session model's denial matured; the default's is brand new.
+    expect(gate.confirm(sessionModel, missing)).toEqual(missing);
+    expect(gate.confirm(defaultModel, missing)).toEqual(pending);
+  });
+
+  test("policy blocks, available, and pending pass through immediately", () => {
+    const { gate } = gateAt(10_000);
+    const blocked: ModelAvailability = { status: "unavailable", reason: "provider_blocked" };
+    expect(gate.confirm(sessionModel, blocked)).toEqual(blocked);
+    expect(gate.confirm(sessionModel, available)).toEqual(available);
+    expect(gate.confirm(sessionModel, pending)).toEqual(pending);
   });
 });

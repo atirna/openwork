@@ -151,7 +151,7 @@ Trigger: *"save this memory to the memory bank."*
    also encoded in the route's OpenAPI `summary` (the one body hint the agent gets):
    ```jsonc
    {
-     "content": "User deploys via den-worker-proxy into a Daytona sandbox", // required
+     "content": "User deploys into a Daytona sandbox", // required
      "tags": ["deploy", "infra"],                                            // optional
      "contexts": [                                                           // optional
        { "snippet": "…excerpt…",                                             // required if present

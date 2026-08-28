@@ -92,6 +92,7 @@ export function createHeadlessThreadClient(options: HeadlessThreadClientOptions)
         ...(body === undefined ? {} : { "Content-Type": "application/json" }),
       },
       ...(body === undefined ? {} : { body: JSON.stringify(body) }),
+      redirect: "error",
       signal: requestSignal(signal),
     });
     const text = await response.text().catch(() => "");

@@ -33,11 +33,14 @@ describe("cloud provisioning image version", () => {
       async insertWorkerInstance(input) {
         inserts.push(input)
       },
+      async touchProvisioningWorker() {},
     }
     const workerId = createDenTypeId("worker")
+    const materializedUrls: string[] = []
 
     await shared.continueCloudProvisioning({
       workerId,
+      orgId: createDenTypeId("organization"),
       name: "Cloud",
       hostToken: "host-token",
       clientToken: "client-token",
@@ -46,10 +49,14 @@ describe("cloud provisioning image version", () => {
       store,
       provisionWorker: async () => ({
         provider: "daytona",
-        url: "https://workers.example.test/cloud",
+        url: "https://initial.preview.example.test",
         status: "healthy",
         imageVersion: "openwork-0.18.8",
       }),
+      materializeProviders: async (input) => {
+        materializedUrls.push(input.instanceUrl)
+        return { ok: true, status: "noop", fingerprint: "owp:v1:test", providers: 0 }
+      },
     })
 
     expect(updates).toHaveLength(1)
@@ -57,5 +64,6 @@ describe("cloud provisioning image version", () => {
     expect(updates[0]?.status).toBe("healthy")
     expect(updates[0]?.imageVersion).toBe("openwork-0.18.8")
     expect(inserts).toHaveLength(1)
+    expect(materializedUrls).toEqual(["https://initial.preview.example.test"])
   })
 })

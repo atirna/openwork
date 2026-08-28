@@ -185,6 +185,51 @@ export async function executeDesktopAutomation(assignment, options) {
   }
 }
 
+/** Delivers a remote command as a normal visible local OpenWork session. */
+export async function executeDesktopRemoteSession(assignment, options) {
+  const local = await options.getLocalRuntime()
+  if (!local?.baseUrl || !local?.token) throw new Error("The desktop runtime is unavailable")
+  const localRequest = (requestPath, request = {}) => requestJson(
+    options.fetchImpl ?? fetch,
+    local.baseUrl,
+    local.token,
+    requestPath,
+    { ...request, signal: options.signal },
+  )
+  const listed = await localRequest("/workspaces")
+  const workspaces = Array.isArray(listed?.items) ? listed.items : []
+  const workspace = workspaces.find((item) => item?.id === listed?.activeId) ?? workspaces[0]
+  if (!workspace?.id) throw new Error("No local workspace is available")
+  const workspaceId = String(workspace.id)
+  let sessionId = null
+  try {
+    const created = await localRequest(`/workspace/${encodeURIComponent(workspaceId)}/sessions`, {
+      method: "POST",
+      body: {
+        title: assignment.title,
+        ...(typeof assignment.prompt === "string" ? { prompt: assignment.prompt } : {}),
+        ...(assignment.model ? {
+          providerId: assignment.model.providerId,
+          modelId: assignment.model.modelId,
+          ...(assignment.model.variant ? { variant: assignment.model.variant } : {}),
+        } : {}),
+      },
+    })
+    sessionId = typeof created?.item?.id === "string" ? created.item.id : null
+    if (!sessionId) throw new Error("The desktop runtime returned no thread")
+    return { sessionId, workspaceId, started: Boolean(created.started) }
+  } catch (error) {
+    const contextualError = error instanceof Error ? error : new Error(serializedError(error))
+    if (sessionId && Reflect.get(contextualError, "sessionId") === undefined) {
+      Object.defineProperty(contextualError, "sessionId", { value: sessionId })
+    }
+    if (Reflect.get(contextualError, "workspaceId") === undefined) {
+      Object.defineProperty(contextualError, "workspaceId", { value: workspaceId })
+    }
+    throw contextualError
+  }
+}
+
 /**
  * The runner sends its bearer token to whatever base URL it is configured
  * with, and the configuration arrives over IPC from the renderer. A
@@ -380,6 +425,47 @@ export function createDesktopAutomationRunner(options) {
     }
   }
 
+  const runRemoteSessionCommand = async (state, assignment) => {
+    const controller = new AbortController()
+    const active = { assignment, controller }
+    state.active = active
+    let result
+    try {
+      const output = await executeDesktopRemoteSession(assignment, {
+        getLocalRuntime: options.getLocalRuntime,
+        fetchImpl,
+        signal: controller.signal,
+      })
+      result = {
+        status: "delivered",
+        sessionId: output.sessionId,
+        workspaceId: output.workspaceId,
+        resultSummary: "Remote session created",
+      }
+    } catch (error) {
+      result = {
+        status: "failed",
+        error: {
+          code: "execution_failed",
+          message: (serializedError(error) || "Remote session creation failed").slice(0, 2_000),
+        },
+      }
+    }
+    try {
+      await runnerRequest(state, `/v1/remote-session-commands/${encodeURIComponent(assignment.commandId)}/complete`, {
+        method: "POST",
+        body: result,
+      })
+    } finally {
+      if (state.active === active) state.active = null
+      if (isCurrent(state) && pendingConfiguration) {
+        const next = pendingConfiguration
+        pendingConfiguration = null
+        activateConfiguration(next)
+      }
+    }
+  }
+
   const reconcile = (state) => {
     if (!isCurrent(state)) return Promise.resolve()
     if (state.reconcilePromise) return state.reconcilePromise
@@ -393,6 +479,26 @@ export function createDesktopAutomationRunner(options) {
         })
         if (!isCurrent(state)) break
         const item = response?.items?.[0]
+        if (item?.kind === "remote_session_create") {
+          if (!item.commandId) break
+          state.claimInFlight = true
+          let claimed
+          try {
+            claimed = await runnerRequest(
+              state,
+              `/v1/remote-session-commands/${encodeURIComponent(item.commandId)}/claim`,
+              { method: "POST", body: {} },
+            )
+          } catch (error) {
+            if (error?.status === 409) continue
+            throw error
+          } finally {
+            state.claimInFlight = false
+          }
+          if (!claimed?.assignment) break
+          await runRemoteSessionCommand(state, claimed.assignment)
+          continue
+        }
         if (!item?.runId) break
         state.claimInFlight = true
         let claimed

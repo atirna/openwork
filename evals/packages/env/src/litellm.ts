@@ -17,8 +17,11 @@ import type { Place } from "./place.ts";
 import type { DaytonaExec, DaytonaExecResult } from "@openwork/hosts";
 
 const IMAGE = "ghcr.io/berriai/litellm:v1.97.0@sha256:468c25f35f3e5ec4e414974f00deab93337b1b4d9953cabcfd3722e59415f834";
+const POSTGRES_IMAGE = "postgres:16-alpine@sha256:cf78e76683b9ca8c5733cbbdce6c9262b45b6767934dd0a95e671f9a0fc20685";
 const COMMAND_TIMEOUT_MS = 180_000;
 const STARTUP_TIMEOUT_MS = 90_000;
+const DATABASE_STARTUP_TIMEOUT_MS = 300_000;
+const POSTGRES_STARTUP_TIMEOUT_MS = 90_000;
 const EXEC_READY_TIMEOUT_MS = 180_000;
 const PREVIEW_EXPIRY_SECONDS = 7_200;
 const DAYTONA_PROXY_PORT = 4_000;
@@ -29,6 +32,8 @@ const DAYTONA_LOG = "/tmp/openwork-litellm.log";
 const DAYTONA_WITNESS_LOG = "/tmp/openwork-litellm-witness.log";
 const BASE64_CHUNK_LENGTH = 8 * 1_024;
 const MAX_DAYTONA_COMMAND_LENGTH = 12 * 1_024;
+const DEFAULT_MAX_INPUT_TOKENS = 128_000;
+const DEFAULT_MAX_OUTPUT_TOKENS = 16_384;
 
 const DAYTONA_DOCKERFILE = `FROM ${IMAGE}
 USER root
@@ -213,6 +218,7 @@ interface HandleInput extends LiteLlmSecrets {
   baseUrl: string;
   controlUrl: string;
   fetchImpl: typeof fetch;
+  redactedSecrets?: string[];
   dispose(): Promise<void>;
 }
 
@@ -322,7 +328,7 @@ async function controlJson(fetchImpl: typeof fetch, controlUrl: string, controlK
 }
 
 function makeHandle(input: HandleInput): LiteLlmHandle {
-  const secrets = [input.masterKey, input.upstreamKey, input.controlKey];
+  const secrets = [input.masterKey, input.upstreamKey, input.controlKey, ...(input.redactedSecrets ?? [])];
   let disposed = false;
   const upstreamRequests = async ({ after }: { after: number }): Promise<LiteLlmUpstreamRequest[]> => {
     const cursor = validCursor(after);
@@ -474,7 +480,14 @@ function startWitness(
   });
 }
 
-function liteLlmConfig(modelId: string, apiBase: string, masterKey: string, upstreamKey: string): string {
+function liteLlmConfig(
+  modelId: string,
+  apiBase: string,
+  masterKey: string,
+  upstreamKey: string,
+  maxInputTokens: number,
+  maxOutputTokens: number,
+): string {
   return JSON.stringify({
     model_list: [{
       model_name: modelId,
@@ -483,9 +496,23 @@ function liteLlmConfig(modelId: string, apiBase: string, masterKey: string, upst
         api_base: apiBase,
         api_key: upstreamKey,
       },
+      model_info: {
+        max_input_tokens: maxInputTokens,
+        max_output_tokens: maxOutputTokens,
+        supports_function_calling: true,
+        supports_vision: true,
+        supports_reasoning: false,
+        supports_response_schema: true,
+        supported_openai_params: ["temperature", "tools", "response_format"],
+      },
     }],
     general_settings: { master_key: masterKey },
   }, null, 2);
+}
+
+function positiveTokenLimit(value: number, label: string): number {
+  if (!Number.isFinite(value) || value <= 0) throw new Error(`${label} must be a finite positive number.`);
+  return value;
 }
 
 async function mappedPort(container: string): Promise<number> {
@@ -493,6 +520,14 @@ async function mappedPort(container: string): Promise<number> {
   const match = result.stdout.match(/:(\d+)\s*$/m);
   const port = match ? Number(match[1]) : 0;
   if (!Number.isInteger(port) || port <= 0) throw new Error(`docker port returned an invalid mapping: ${result.stdout.trim()}`);
+  return port;
+}
+
+async function mappedPostgresPort(container: string): Promise<number> {
+  const result = await run("docker", ["port", container, "5432/tcp"], 10_000);
+  const match = result.stdout.match(/:(\d+)\s*$/m);
+  const port = match ? Number(match[1]) : 0;
+  if (!Number.isInteger(port) || port <= 0) throw new Error(`docker port returned an invalid Postgres mapping: ${result.stdout.trim()}`);
   return port;
 }
 
@@ -523,8 +558,78 @@ async function waitForLocalProxy(container: string, apiKey: string, modelId: str
   throw new Error(`LiteLLM did not expose model ${modelId} within ${STARTUP_TIMEOUT_MS}ms (last observation: ${last}).`);
 }
 
+async function waitForLocalDatabaseProxy(container: string, apiKey: string, modelId: string): Promise<number> {
+  const deadline = Date.now() + DATABASE_STARTUP_TIMEOUT_MS;
+  let port = 0;
+  let modelsReady = false;
+  let last = "proxy not queried";
+  while (Date.now() < deadline) {
+    try {
+      port ||= await mappedPort(container);
+      const response = await fetch(`http://127.0.0.1:${port}/v1/models`, {
+        headers: { authorization: `Bearer ${apiKey}` },
+        signal: AbortSignal.timeout(3_000),
+      });
+      const body: unknown = await response.json();
+      if (response.ok && modelIds(body).includes(modelId)) {
+        modelsReady = true;
+        break;
+      }
+      last = `models HTTP ${response.status}`;
+    } catch (error) {
+      last = messageText(error);
+    }
+    await delay(1_000);
+  }
+  if (!port || !modelsReady) {
+    throw new Error(`LiteLLM did not expose model ${modelId} within ${DATABASE_STARTUP_TIMEOUT_MS}ms (last observation: ${last}).`);
+  }
+
+  const keyManagementDeadline = Date.now() + DATABASE_STARTUP_TIMEOUT_MS;
+  while (Date.now() < keyManagementDeadline) {
+    try {
+      const response = await fetch(`http://127.0.0.1:${port}/key/generate`, {
+        method: "POST",
+        headers: {
+          authorization: `Bearer ${apiKey}`,
+          "content-type": "application/json",
+        },
+        body: JSON.stringify({ models: [modelId], duration: "5m" }),
+        signal: AbortSignal.timeout(5_000),
+      });
+      if (response.ok) return port;
+      last = `key management HTTP ${response.status}`;
+    } catch (error) {
+      last = messageText(error);
+    }
+    await delay(1_000);
+  }
+  throw new Error(`LiteLLM key management did not become ready within ${DATABASE_STARTUP_TIMEOUT_MS}ms (last observation: ${last}).`);
+}
+
+async function waitForPostgres(container: string): Promise<void> {
+  const deadline = Date.now() + POSTGRES_STARTUP_TIMEOUT_MS;
+  let last = "pg_isready not attempted";
+  while (Date.now() < deadline) {
+    try {
+      await run("docker", ["exec", container, "pg_isready", "--username", "postgres", "--dbname", "litellm"], 5_000);
+      return;
+    } catch (error) {
+      last = messageText(error);
+    }
+    await delay(500);
+  }
+  throw new Error(`LiteLLM Postgres did not become ready within ${POSTGRES_STARTUP_TIMEOUT_MS}ms (last observation: ${last}).`);
+}
+
 async function startLocalLiteLlm(
-  input: { modelId: string; reply: string },
+  input: {
+    modelId: string;
+    reply: string;
+    database?: boolean;
+    maxInputTokens: number;
+    maxOutputTokens: number;
+  },
   secrets: LiteLlmSecrets,
 ): Promise<LiteLlmHandle> {
   try {
@@ -535,6 +640,8 @@ async function startLocalLiteLlm(
 
   const state: WitnessState = { requests: [], sequence: 0 };
   const container = `openwork-litellm-${randomBytes(8).toString("hex")}`;
+  const postgresContainer = input.database ? `openwork-litellm-postgres-${randomBytes(8).toString("hex")}` : "";
+  const postgresPassword = input.database ? randomBytes(32).toString("hex") : "";
   let root = "";
   let witness: Server | null = null;
   try {
@@ -555,27 +662,57 @@ async function startLocalLiteLlm(
         `http://host.docker.internal:${startedWitness.port}/v1`,
         secrets.masterKey,
         secrets.upstreamKey,
+        input.maxInputTokens,
+        input.maxOutputTokens,
       ),
       { mode: 0o600 },
     );
-    await run("docker", [
-      "create", "--name", container,
-      "--add-host", "host.docker.internal:host-gateway",
-      "--publish", "127.0.0.1::4000",
-      IMAGE, "--config", "/app/config.json", "--port", "4000",
-    ]);
+    let postgresPort = 0;
+    if (input.database) {
+      await run("docker", [
+        "create", "--name", postgresContainer,
+        "--env", `POSTGRES_PASSWORD=${postgresPassword}`,
+        "--env", "POSTGRES_DB=litellm",
+        "--publish", "127.0.0.1::5432",
+        POSTGRES_IMAGE,
+      ]);
+      await run("docker", ["start", postgresContainer], 30_000);
+      postgresPort = await mappedPostgresPort(postgresContainer);
+      await waitForPostgres(postgresContainer);
+    }
+    const createArgs = input.database
+      ? [
+          "create", "--name", container,
+          "--add-host", "host.docker.internal:host-gateway",
+          "--publish", "127.0.0.1::4000",
+          "--env", `DATABASE_URL=postgresql://postgres:${postgresPassword}@host.docker.internal:${postgresPort}/litellm`,
+          IMAGE, "--config", "/app/config.json", "--port", "4000",
+        ]
+      : [
+          "create", "--name", container,
+          "--add-host", "host.docker.internal:host-gateway",
+          "--publish", "127.0.0.1::4000",
+          IMAGE, "--config", "/app/config.json", "--port", "4000",
+        ];
+    await run("docker", createArgs);
     await run("docker", ["cp", configPath, `${container}:/app/config.json`], 30_000);
     await run("docker", ["start", container], 30_000);
-    const port = await waitForLocalProxy(container, secrets.masterKey, input.modelId);
+    const port = input.database
+      ? await waitForLocalDatabaseProxy(container, secrets.masterKey, input.modelId)
+      : await waitForLocalProxy(container, secrets.masterKey, input.modelId);
     let placementDisposed = false;
     return makeHandle({
       ...secrets,
       baseUrl: `http://127.0.0.1:${port}/v1`,
       controlUrl: `http://127.0.0.1:${startedWitness.port}`,
       fetchImpl: fetch,
+      redactedSecrets: input.database ? [postgresPassword] : undefined,
       async dispose(): Promise<void> {
         if (placementDisposed) return;
         await run("docker", ["rm", "--force", container], 20_000).catch(() => undefined);
+        if (input.database) {
+          await run("docker", ["rm", "--force", postgresContainer], 20_000).catch(() => undefined);
+        }
         await Promise.all([
           rm(root, { recursive: true, force: true }),
           closeServer(startedWitness.server),
@@ -585,12 +722,18 @@ async function startLocalLiteLlm(
     });
   } catch (error) {
     const logs = await run("docker", ["logs", container], 10_000).then((result) => result.stdout + result.stderr, () => "");
+    const postgresLogs = input.database
+      ? await run("docker", ["logs", postgresContainer], 10_000).then((result) => result.stdout + result.stderr, () => "")
+      : "";
     await run("docker", ["rm", "--force", container], 20_000).catch(() => undefined);
+    if (input.database) {
+      await run("docker", ["rm", "--force", postgresContainer], 20_000).catch(() => undefined);
+    }
     if (root) await rm(root, { recursive: true, force: true }).catch(() => undefined);
     if (witness) await closeServer(witness).catch(() => undefined);
     throw redactedError(
-      `${messageText(error)}${logs ? `\nDocker logs:\n${logs.slice(-4_000)}` : ""}`,
-      [secrets.masterKey, secrets.upstreamKey, secrets.controlKey],
+      `${messageText(error)}${logs ? `\nDocker logs:\n${logs.slice(-4_000)}` : ""}${postgresLogs ? `\nPostgres logs:\n${postgresLogs.slice(-4_000)}` : ""}`,
+      [secrets.masterKey, secrets.upstreamKey, secrets.controlKey, ...(input.database ? [postgresPassword] : [])],
     );
   }
 }
@@ -741,7 +884,14 @@ echo detached`;
 }
 
 async function startDaytonaLiteLlm(
-  input: { modelId: string; reply: string; daytonaExec?: DaytonaExec; fetchImpl?: typeof fetch },
+  input: {
+    modelId: string;
+    reply: string;
+    maxInputTokens: number;
+    maxOutputTokens: number;
+    daytonaExec?: DaytonaExec;
+    fetchImpl?: typeof fetch;
+  },
   secrets: LiteLlmSecrets,
 ): Promise<LiteLlmHandle> {
   const exec = input.daytonaExec ?? defaultDaytonaExec;
@@ -778,6 +928,8 @@ async function startDaytonaLiteLlm(
       `http://127.0.0.1:${DAYTONA_WITNESS_PORT}/v1`,
       secrets.masterKey,
       secrets.upstreamKey,
+      input.maxInputTokens,
+      input.maxOutputTokens,
     );
     const uploads = [
       ...uploadCommands(config, DAYTONA_CONFIG),
@@ -834,6 +986,9 @@ export async function liteLlm(input: {
   place: Place;
   modelId: string;
   reply: string;
+  database?: boolean;
+  maxInputTokens?: number;
+  maxOutputTokens?: number;
   daytonaExec?: DaytonaExec;
   fetchImpl?: typeof fetch;
 }): Promise<LiteLlmHandle> {
@@ -842,7 +997,15 @@ export async function liteLlm(input: {
     upstreamKey: `sk-openwork-upstream-${randomBytes(24).toString("hex")}`,
     controlKey: `sk-openwork-control-${randomBytes(24).toString("hex")}`,
   };
+  if (input.database && input.place.kind === "daytona") {
+    throw new SkipError("LiteLLM database mode currently requires docker placement");
+  }
+  const normalizedInput = {
+    ...input,
+    maxInputTokens: positiveTokenLimit(input.maxInputTokens ?? DEFAULT_MAX_INPUT_TOKENS, "maxInputTokens"),
+    maxOutputTokens: positiveTokenLimit(input.maxOutputTokens ?? DEFAULT_MAX_OUTPUT_TOKENS, "maxOutputTokens"),
+  };
   return input.place.kind === "daytona"
-    ? startDaytonaLiteLlm(input, secrets)
-    : startLocalLiteLlm(input, secrets);
+    ? startDaytonaLiteLlm(normalizedInput, secrets)
+    : startLocalLiteLlm(normalizedInput, secrets);
 }

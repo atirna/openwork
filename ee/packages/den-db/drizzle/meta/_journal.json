@@ -547,6 +547,34 @@
       "when": 1787667476277,
       "tag": "0078_premium_mastermind",
       "breakpoints": true
+    },
+    {
+      "idx": 79,
+      "version": "5",
+      "when": 1787858067776,
+      "tag": "0079_stale_thanos",
+      "breakpoints": true
+    },
+    {
+      "idx": 80,
+      "version": "5",
+      "when": 1787865994901,
+      "tag": "0080_flowery_riptide",
+      "breakpoints": true
+    },
+    {
+      "idx": 81,
+      "version": "5",
+      "when": 1787867730455,
+      "tag": "0081_familiar_miracleman",
+      "breakpoints": true
+    },
+    {
+      "idx": 82,
+      "version": "5",
+      "when": 1787870331311,
+      "tag": "0082_silky_falcon",
+      "breakpoints": true
     }
   ]
 }

@@ -36,6 +36,11 @@
       "development": "./src/schema/org.ts",
       "default": "./dist/schema/org.js"
     },
+    "./schema/remote-session-commands": {
+      "types": "./src/schema/remote-session-commands.ts",
+      "development": "./src/schema/remote-session-commands.ts",
+      "default": "./dist/schema/remote-session-commands.js"
+    },
     "./schema/teams": {
       "types": "./src/schema/teams.ts",
       "development": "./src/schema/teams.ts",

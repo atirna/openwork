@@ -2,6 +2,7 @@ import { relations, sql } from "drizzle-orm"
 import { bigint, index, int, json, mysqlEnum, mysqlTable, text, timestamp, uniqueIndex, varchar } from "drizzle-orm/mysql-core"
 import type {
   AutomationAction,
+  AutomationDesktopRunnerCapability,
   AutomationError,
   AutomationNeedsAttentionReason,
   AutomationRunEventType,
@@ -78,6 +79,7 @@ export const AutomationRunnerTable = mysqlTable(
     owner_member_id: denTypeIdColumn("member", "owner_member_id").notNull(),
     protocol_version: int("protocol_version").notNull(),
     supported_execution_targets: json("supported_execution_targets").$type<Array<"desktop">>().notNull(),
+    capabilities: json("capabilities").$type<AutomationDesktopRunnerCapability[]>(),
     app_version: varchar("app_version", { length: 80 }).notNull(),
     platform: mysqlEnum("platform", ["darwin", "win32", "linux"]).notNull(),
     concurrency: int("concurrency").notNull(),

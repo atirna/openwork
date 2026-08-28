@@ -67,6 +67,14 @@ describe("deriveOpenTargets", () => {
     expect(targets[0]).toMatchObject({ value: "summary.md", preview: "markdown", confidence: 95 });
   });
 
+  it("opens standalone Mermaid files through the Markdown preview", () => {
+    const targets = deriveOpenTargets([
+      toolMessage("msg_tool", "write", { path: "diagrams/architecture.mmd" }, { path: "diagrams/architecture.mmd" }),
+    ]);
+
+    expect(targets[0]).toMatchObject({ value: "diagrams/architecture.mmd", preview: "markdown", confidence: 95 });
+  });
+
   it("extracts filePath metadata from write tools", () => {
     const targets = deriveOpenTargets([
       toolMessage("msg_tool", "write", { filePath: "reports/summary.md" }, { filePath: "reports/summary.md" }),

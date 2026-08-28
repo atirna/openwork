@@ -13,7 +13,7 @@ export type OpencodeSessionErrorPresentation = {
   recoveryPrompt: string | null;
 };
 
-const interruptedTaskRecoveryPrompt = [
+export const interruptedTaskRecoveryPrompt = [
   "Continue the interrupted task from the current state.",
   "First inspect the conversation and workspace to verify which actions already completed.",
   "Preserve completed work, do not repeat side effects, and finish only what remains.",

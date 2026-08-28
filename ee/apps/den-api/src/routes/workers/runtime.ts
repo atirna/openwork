@@ -45,7 +45,7 @@ export function registerWorkerRuntimeRoutes<T extends { Variables: WorkerRouteVa
     }
 
     const runtime = await fetchWorkerRuntimeJson({
-      workerId: worker.id,
+      worker,
       path: "/runtime/versions",
     })
 
@@ -96,7 +96,7 @@ export function registerWorkerRuntimeRoutes<T extends { Variables: WorkerRouteVa
     }
 
     const runtime = await fetchWorkerRuntimeJson({
-      workerId: worker.id,
+      worker,
       path: "/runtime/upgrade",
       method: "POST",
       body,

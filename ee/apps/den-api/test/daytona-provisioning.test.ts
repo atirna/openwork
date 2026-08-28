@@ -16,8 +16,8 @@ function seedRequiredEnv() {
   process.env.BETTER_AUTH_URL = process.env.BETTER_AUTH_URL ?? "http://127.0.0.1:8790"
   process.env.CORS_ORIGINS = process.env.CORS_ORIGINS ?? "http://127.0.0.1:8790"
   process.env.DAYTONA_API_KEY = "daytona-test-key"
-  process.env.DAYTONA_WORKER_PROXY_BASE_URL = "https://workers.example.test"
   process.env.DAYTONA_SNAPSHOT = "openwork-0.18.8"
+  process.env.DAYTONA_SIGNED_PREVIEW_EXPIRES_SECONDS = "1"
 }
 
 let daytona: DaytonaModule
@@ -47,6 +47,7 @@ function makeSandbox(input: {
   startError?: Error
   startErrors?: Error[]
   refreshStates?: string[]
+  onSignedPreview?: () => void
 }) {
   let state = input.state
   let startCalls = 0
@@ -79,6 +80,7 @@ function makeSandbox(input: {
       deleteCalls += 1
     },
     async getSignedPreviewUrl() {
+      input.onSignedPreview?.()
       return { url: `https://${input.id}.preview.example.test` }
     },
     process: {
@@ -117,6 +119,8 @@ function makeRuntime(input: {
   createError?: Error
   checkpointExists?: boolean
   restoreMarkerVerified?: boolean
+  waitForHealth?: () => Promise<void>
+  now?: () => number
 }) {
   let createCalls = 0
   let healthChecks = 0
@@ -177,7 +181,9 @@ function makeRuntime(input: {
     },
     async waitForHealth() {
       healthChecks += 1
+      await input.waitForHealth?.()
     },
+    now: input.now,
   } satisfies DaytonaProvisioningRuntime
 
   return {
@@ -215,7 +221,7 @@ describe("Daytona Cloud provisioning adoption", () => {
 
     expect(result.status).toBe("healthy")
     expect(result.imageVersion).toBe("openwork-0.18.8")
-    expect(result.url).toBe(`https://workers.example.test/${encodeURIComponent(input.workerId)}`)
+    expect(result.url).toBe("https://sbx_existing.preview.example.test")
     expect(runtime.createCalls).toBe(1)
     expect(existing.startCalls).toBe(1)
     expect(existing.deleteCalls).toBe(0)
@@ -296,6 +302,34 @@ describe("Daytona Cloud provisioning adoption", () => {
     expect(created.deleteCalls).toBe(0)
     expect(runtime.upserts).toHaveLength(1)
     expect(runtime.upserts[0]?.sandboxId).toBe("sbx_created")
+  })
+
+  test("a one-second preview is already unsafe after issuance and a delayed health wait", async () => {
+    const input = provisionInput()
+    let mintedAt = 0
+    let now = 1_000
+    const created = makeSandbox({
+      id: "sbx_delayed_health",
+      state: "started",
+      onSignedPreview: () => {
+        mintedAt = now
+      },
+    })
+    const runtime = makeRuntime({
+      sandboxName: daytona.daytonaSandboxName(input),
+      nameResults: [null],
+      createdSandbox: created.sandbox,
+      waitForHealth: async () => {
+        now += 30_000
+      },
+      now: () => now,
+    })
+
+    await daytona.provisionWorkerOnDaytonaWithRuntime(input, runtime.runtime)
+
+    const refreshAt = runtime.upserts[0]?.signedPreviewUrlExpiresAt.getTime()
+    expect(mintedAt).toBeGreaterThan(0)
+    expect(refreshAt).toBeLessThanOrEqual(mintedAt)
   })
 
   test("does not delete an adopted sandbox when starting it fails", async () => {

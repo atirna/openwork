@@ -53,6 +53,7 @@ import { resolveConnectLinkPublicKeys } from "./connect-link-keys.mjs";
 import { openExternalUrl } from "./open-external.mjs";
 import { resolveAppIdentifier, resolveUserDataPath } from "./dev-profile.mjs";
 import { fetchAgentContextDiagnosticsResponse } from "./agent-context-diagnostics-fetch.mjs";
+import { downloadBinaryToPath, uploadMultipartFromBytes } from "./binary-transfer.mjs";
 import {
   createLinuxDesktopIntegration,
 } from "./linux-desktop-integration.mjs";
@@ -1061,6 +1062,45 @@ const workspaceStore = createWorkspaceStore({
   defaultRequireSignin: DEFAULT_DESKTOP_REQUIRE_SIGNIN,
   forceRequireSignin: FORCE_DESKTOP_REQUIRE_SIGNIN,
 });
+
+const activeDesktopTransfers = new Map();
+
+function desktopTransferKey(event, transferId) {
+  const normalizedId = typeof transferId === "string" ? transferId.trim() : "";
+  if (!normalizedId || normalizedId.length > 128 || !/^[a-zA-Z0-9._-]+$/.test(normalizedId)) {
+    throw new Error("A valid transferId is required.");
+  }
+  return `${event.sender.id}:${normalizedId}`;
+}
+
+async function runDesktopTransfer(event, input, operation) {
+  const key = desktopTransferKey(event, input?.transferId);
+  if (activeDesktopTransfers.has(key)) throw new Error("transferId is already active.");
+  const controller = new AbortController();
+  const abort = () => controller.abort();
+  activeDesktopTransfers.set(key, controller);
+  event.sender.once("destroyed", abort);
+  try {
+    // Both authorities come from app-owned state in userData; workspace-
+    // writable configuration must never widen where a transfer may write.
+    const [authorizedRoots, allowedUrlPrefixes] = await Promise.all([
+      workspaceStore.listLocalWorkspacePaths(),
+      workspaceStore.listRemoteWorkspaceUrlPrefixes(),
+    ]);
+    return await operation(input, {
+      authorizedRoots,
+      allowedUrlPrefixes,
+      // App-owned staging keeps in-flight downloads outside every authorized
+      // workspace root until they complete.
+      stagingDir: path.join(app.getPath("userData"), "binary-transfers"),
+      fetcher: electronNet.fetch,
+      signal: controller.signal,
+    });
+  } finally {
+    event.sender.removeListener("destroyed", abort);
+    activeDesktopTransfers.delete(key);
+  }
+}
 
 const connectLinkReplayGuard = createConnectLinkReplayGuard({
   filePath: path.join(app.getPath("userData"), "connect-link-seen.json"),
@@ -2274,6 +2314,18 @@ const desktopCommandHandlers = {
         headers: Array.from(response.headers.entries()),
         body: await response.text(),
       };
+  },
+  "__uploadMultipart": async (event, ...args) => {
+      return runDesktopTransfer(event, args[0] ?? {}, uploadMultipartFromBytes);
+  },
+  "__downloadBinary": async (event, ...args) => {
+      return runDesktopTransfer(event, args[0] ?? {}, downloadBinaryToPath);
+  },
+  "__cancelTransfer": async (event, ...args) => {
+      const controller = activeDesktopTransfers.get(desktopTransferKey(event, args[0]));
+      if (!controller) return false;
+      controller.abort();
+      return true;
   },
   "__homeDir": async (event, ...args) => {
       return os.homedir();

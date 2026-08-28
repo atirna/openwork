@@ -93,7 +93,6 @@ const EnvSchema = z.object({
   DEN_BOOTSTRAP_ADMIN_EMAILS: z.string().optional(),
   DEN_INITIAL_ADMIN_BOOTSTRAP_CODE: z.string().optional(),
   DEN_INITIAL_ADMIN_BOOTSTRAP_CODE_FILE: z.string().optional(),
-  WORKER_PROXY_PORT: z.string().optional(),
   WORKER_PROVISIONING_RECONCILE_INTERVAL_MS: z.string().optional(),
   WORKER_PROVISIONING_RECONCILE_STALE_MS: z.string().optional(),
   WORKER_PROVISIONING_RECONCILE_BATCH_SIZE: z.string().optional(),
@@ -107,6 +106,7 @@ const EnvSchema = z.object({
   WORKER_ACTIVITY_BASE_URL: z.string().optional(),
   DEN_AUTOMATIONS_ENABLED: z.string().optional(),
   DEN_DASHBOARDS_ENABLED: z.string().optional(),
+  DEN_OPENWORK_WEB_ENABLED: z.string().optional(),
   DEN_AUTOMATIONS_RUNTIME_ENABLED: z.string().optional(),
   DEN_AUTOMATIONS_POLL_INTERVAL_MS: z.string().optional(),
   DEN_AUTOMATIONS_BATCH_SIZE: z.string().optional(),
@@ -163,7 +163,6 @@ const EnvSchema = z.object({
   DAYTONA_SANDBOX_AUTO_ARCHIVE_INTERVAL: z.string().optional(),
   DAYTONA_SANDBOX_AUTO_DELETE_INTERVAL: z.string().optional(),
   DAYTONA_SIGNED_PREVIEW_EXPIRES_SECONDS: z.string().optional(),
-  DAYTONA_WORKER_PROXY_BASE_URL: z.string().optional(),
   DAYTONA_SANDBOX_NAME_PREFIX: z.string().optional(),
   DAYTONA_SHARED_VOLUME_NAME: z.string().optional(),
   DAYTONA_VOLUME_NAME_PREFIX: z.string().optional(),
@@ -187,6 +186,7 @@ const EnvSchema = z.object({
   STRIPE_WEBHOOK_SECRET: z.string().optional(),
   STRIPE_INFERENCE_PRICE_ID: z.string().optional(),
   STRIPE_SEAT_PRICE_ID: z.string().optional(),
+  STRIPE_OPENWORK_WEB_PRICE_ID: z.string().optional(),
   STRIPE_BILLING_SUCCESS_URL: z.string().optional(),
   STRIPE_BILLING_CANCEL_URL: z.string().optional(),
 }).superRefine((value, ctx) => {
@@ -221,7 +221,7 @@ const EnvSchema = z.object({
   }
 
   if (value.PROVISIONER_MODE === "daytona") {
-    for (const key of ["DAYTONA_API_KEY", "DAYTONA_WORKER_PROXY_BASE_URL"] as const) {
+    for (const key of ["DAYTONA_API_KEY"] as const) {
       if (!value[key]) {
         ctx.addIssue({
           code: z.ZodIssueCode.custom,
@@ -537,6 +537,7 @@ const automationsRuntimeEnabled = parseBooleanFlag(
 const automationsEnabled = automationsRuntimeEnabled
   && parseBooleanFlag(parsed.DEN_AUTOMATIONS_ENABLED ?? "false")
 const dashboardsEnabled = parseBooleanFlag(parsed.DEN_DASHBOARDS_ENABLED ?? "false")
+const openworkWebEnabled = parseBooleanFlag(parsed.DEN_OPENWORK_WEB_ENABLED ?? "false")
 
 const devMode = (parsed.OPENWORK_DEV_MODE ?? "0").trim() === "1"
 const port = Number(parsed.PORT ?? "8790")
@@ -735,7 +736,6 @@ export const env = {
       .map((email) => email.toLowerCase()),
   },
   port,
-  workerProxyPort: Number(parsed.WORKER_PROXY_PORT ?? "8789"),
   corsOrigins,
   apiPublicUrl,
   serviceVersion: resolveDenServiceVersion({
@@ -771,7 +771,10 @@ export const env = {
   initialAdminBootstrapCode,
   provisionerMode: parsed.PROVISIONER_MODE ?? "stub",
   workerProvisioningReconcileIntervalMs: Number(parsed.WORKER_PROVISIONING_RECONCILE_INTERVAL_MS ?? "60000"),
-  workerProvisioningReconcileStaleMs: Number(parsed.WORKER_PROVISIONING_RECONCILE_STALE_MS ?? "1200000"),
+  // Live provisioning owners heartbeat `updated_at` every 30 seconds, so this
+  // staleness only fires after several missed beats. Keep it several multiples
+  // of `provisioningHeartbeatIntervalMs`.
+  workerProvisioningReconcileStaleMs: Number(parsed.WORKER_PROVISIONING_RECONCILE_STALE_MS ?? "180000"),
   workerProvisioningReconcileBatchSize: Number(parsed.WORKER_PROVISIONING_RECONCILE_BATCH_SIZE ?? "10"),
   cloudProvisionDeadlineMs: Number(parsed.CLOUD_PROVISION_DEADLINE_MS ?? "900000"),
   cloudMaterializationFailureCooldownMs: Number(parsed.CLOUD_MATERIALIZATION_FAILURE_COOLDOWN_MS ?? "120000"),
@@ -798,6 +801,7 @@ export const env = {
     runnerClaimDeadlineMs: automationTuning(parsed.DEN_AUTOMATIONS_RUNNER_CLAIM_DEADLINE_MS, 900_000),
   },
   dashboardsEnabled,
+  openworkWebEnabled,
   inferenceProxyBaseUrl: optionalString(parsed.INFERENCE_PROXY_BASE_URL) ?? "http://127.0.0.1:8791",
   openRouterManagementApiKey: optionalString(parsed.OPENROUTER_MANAGEMENT_API_KEY),
   openRouterWorkspaceId: optionalString(parsed.OPENROUTER_WORKSPACE_ID),
@@ -806,6 +810,7 @@ export const env = {
     webhookSecret: optionalString(parsed.STRIPE_WEBHOOK_SECRET),
     inferencePriceId: optionalString(parsed.STRIPE_INFERENCE_PRICE_ID),
     seatPriceId: optionalString(parsed.STRIPE_SEAT_PRICE_ID),
+    openworkWebPriceId: optionalString(parsed.STRIPE_OPENWORK_WEB_PRICE_ID),
     billingSuccessUrl: optionalString(parsed.STRIPE_BILLING_SUCCESS_URL),
     billingCancelUrl: optionalString(parsed.STRIPE_BILLING_CANCEL_URL),
   },
@@ -872,8 +877,6 @@ export const env = {
     signedPreviewExpiresSeconds: Number(
       parsed.DAYTONA_SIGNED_PREVIEW_EXPIRES_SECONDS ?? "86400",
     ),
-    workerProxyBaseUrl:
-      optionalString(parsed.DAYTONA_WORKER_PROXY_BASE_URL) ?? "http://workers.local",
     sandboxNamePrefix:
       optionalString(parsed.DAYTONA_SANDBOX_NAME_PREFIX) ?? "den-daytona-worker",
     sharedVolumeName:

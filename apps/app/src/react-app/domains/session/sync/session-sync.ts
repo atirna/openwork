@@ -1,4 +1,5 @@
 import type { UIMessage } from "ai";
+import { create } from "zustand";
 import type { FilePart, Part, PermissionRequest, PermissionV2Request, QuestionRequest, Session, SessionStatus, Todo } from "@opencode-ai/sdk/v2/client";
 
 import { getReactQueryClient } from "../../../infra/query-client";
@@ -44,7 +45,9 @@ import {
   type DeltaFlushLane,
   type PendingDelta,
 } from "./session-transcript-deltas";
+import { startSyncStreamLifecycle, type SyncStreamPhase } from "./sync-stream-lifecycle";
 
+export { type SyncStreamPhase } from "./sync-stream-lifecycle";
 export {
   applyPendingDeltasToTranscript,
   coalescePendingDeltas,
@@ -68,6 +71,10 @@ type ListenerRegistry<Listener> = Map<Listener, number>;
 type SyncEntry = {
   input: SyncOptions;
   openworkToken: string;
+  // Reattachment can rotate the token after the stream already failed. This
+  // hook advances the stream lifecycle's connection generation so a stream
+  // parked in auth backoff restarts immediately with the new credential.
+  notifyStreamGenerationChanged: (() => void) | null;
   refs: number;
   dispose: () => void;
   disposeTimer: ReturnType<typeof setTimeout> | null;
@@ -199,6 +206,37 @@ function syncKey(input: SyncOptions) {
   return `${input.workspaceId}:${input.baseUrl}`;
 }
 
+type WorkspaceSyncStreamStore = {
+  phasesByKey: Record<string, SyncStreamPhase>;
+  publishPhase: (key: string, phase: SyncStreamPhase) => void;
+  removePhase: (key: string) => void;
+};
+
+/**
+ * Live health of each workspace event stream so surfaces can tell a live
+ * stream from one that is reconnecting, blocked on authentication, or stale.
+ * The lifecycle only publishes actual transitions, so subscribers do not see
+ * duplicate notifications.
+ */
+export const useWorkspaceSyncStreamStore = create<WorkspaceSyncStreamStore>((set) => ({
+  phasesByKey: {},
+  publishPhase: (key, phase) => set((state) => ({
+    phasesByKey: { ...state.phasesByKey, [key]: phase },
+  })),
+  removePhase: (key) => set((state) => {
+    if (!(key in state.phasesByKey)) return state;
+    const next = { ...state.phasesByKey };
+    delete next[key];
+    return { phasesByKey: next };
+  }),
+}));
+
+export function getWorkspaceSessionSyncStreamPhase(
+  input: Pick<SyncOptions, "workspaceId" | "baseUrl">,
+): SyncStreamPhase | null {
+  return useWorkspaceSyncStreamStore.getState().phasesByKey[`${input.workspaceId}:${input.baseUrl}`] ?? null;
+}
+
 function getErrorStatus(error: unknown) {
   if (!error || typeof error !== "object") return null;
   const record = error as {
@@ -210,9 +248,14 @@ function getErrorStatus(error: unknown) {
   return typeof status === "number" ? status : null;
 }
 
-function shouldRetrySyncSubscribe(error: unknown) {
+// 401/403/404 can mean a permanently invalid token, but the same statuses
+// occur transiently while the local server restarts or the runtime generation
+// rotates. They select the slower bounded auth backoff lane instead of
+// terminating the stream: the task may still be running on the server, and a
+// dead stream would silently stop delivering its events.
+function isAuthBlockedSubscribeError(error: unknown) {
   const status = getErrorStatus(error);
-  return status !== 401 && status !== 403 && status !== 404;
+  return status === 401 || status === 403 || status === 404;
 }
 
 function isTrackedSession(entry: SyncEntry, sessionId: string) {
@@ -1070,69 +1113,33 @@ function commitDeltas(entry: SyncEntry, workspaceId: string, items: PendingDelta
 }
 
 function startSync(input: SyncOptions, entry: SyncEntry) {
-  const controller = new AbortController();
-  let disposed = false;
-  let retryTimer: ReturnType<typeof setTimeout> | null = null;
-  let watchdogTimer: ReturnType<typeof setInterval> | null = null;
-  let activeConnectionController: AbortController | null = null;
-  let lastEventAt = Date.now();
-  let retryDelayMs = 1_000;
-  const staleStreamMs = 30_000;
-
-  const scheduleRetry = () => {
-    if (disposed || controller.signal.aborted || retryTimer) return;
-    activeConnectionController = null;
-    retryTimer = setTimeout(() => {
-      retryTimer = null;
-      void connect();
-    }, retryDelayMs);
-    retryDelayMs = Math.min(retryDelayMs * 2, 10_000);
-  };
-
-  const connect = async () => {
-    const connectionController = new AbortController();
-    activeConnectionController = connectionController;
-    try {
-      const stream = await syncSubscriptionFactory(input.baseUrl, entry.openworkToken, connectionController.signal);
-      retryDelayMs = 1_000;
-      lastEventAt = Date.now();
-      void reconcileSessionRunStatuses(entry, input, connectionController.signal);
-      for await (const raw of stream) {
-        if (controller.signal.aborted || connectionController.signal.aborted) return;
-        lastEventAt = Date.now();
-        const event = normalizeEvent(raw);
-        if (!event) continue;
-        applyEvent(entry, input.workspaceId, event);
-      }
-      if (!controller.signal.aborted && activeConnectionController === connectionController) scheduleRetry();
-    } catch (error) {
-      if (
-        !controller.signal.aborted &&
-        (connectionController.signal.aborted || shouldRetrySyncSubscribe(error))
-      ) {
-        scheduleRetry();
-      }
-    } finally {
-      if (activeConnectionController === connectionController) activeConnectionController = null;
-    }
-  };
-
-  void connect();
-  watchdogTimer = setInterval(() => {
-    if (disposed || controller.signal.aborted || retryTimer) return;
-    const active = activeConnectionController;
-    if (!active || active.signal.aborted) return;
-    if (Date.now() - lastEventAt < staleStreamMs) return;
-    active.abort();
-    scheduleRetry();
-  }, 10_000);
+  const streamKey = syncKey(input);
+  const lifecycle = startSyncStreamLifecycle({
+    // Read the token at connect time so every retry — including a
+    // generation-triggered restart — uses the latest credential.
+    subscribe: (signal) => syncSubscriptionFactory(input.baseUrl, entry.openworkToken, signal),
+    onEvent: (raw) => {
+      const event = normalizeEvent(raw);
+      if (!event) return;
+      applyEvent(entry, input.workspaceId, event);
+    },
+    // Level-reconcile run statuses on every (re)connect before trusting any
+    // cached idle: the server may have started or finished work while the
+    // stream was down.
+    onConnected: (signal) => {
+      void reconcileSessionRunStatuses(entry, input, signal);
+    },
+    onPhaseChange: (phase) => {
+      useWorkspaceSyncStreamStore.getState().publishPhase(streamKey, phase);
+    },
+    isAuthError: isAuthBlockedSubscribeError,
+  });
+  entry.notifyStreamGenerationChanged = lifecycle.notifyGenerationChanged;
 
   return () => {
-    disposed = true;
-    if (retryTimer) clearTimeout(retryTimer);
-    if (watchdogTimer) clearInterval(watchdogTimer);
-    activeConnectionController?.abort();
-    controller.abort();
+    entry.notifyStreamGenerationChanged = null;
+    lifecycle.dispose();
+    useWorkspaceSyncStreamStore.getState().removePhase(streamKey);
   };
 }
 
@@ -1194,7 +1201,13 @@ export function ensureWorkspaceSessionSync(input: SyncOptions) {
   const existing = syncs.get(key);
   if (existing) {
     existing.input = input;
-    existing.openworkToken = input.openworkToken;
+    if (existing.openworkToken !== input.openworkToken) {
+      // Reattachment with a rotated token (or a restarted runtime's fresh
+      // credential) is a new connection generation: restart a stream parked
+      // in auth backoff instead of leaving the task streaming nowhere.
+      existing.openworkToken = input.openworkToken;
+      existing.notifyStreamGenerationChanged?.();
+    }
     if (existing.disposeTimer) {
       clearTimeout(existing.disposeTimer);
       existing.disposeTimer = null;
@@ -1211,6 +1224,7 @@ export function ensureWorkspaceSessionSync(input: SyncOptions) {
   const created: SyncEntry = {
     input,
     openworkToken: input.openworkToken,
+    notifyStreamGenerationChanged: null,
     refs: 1,
     dispose: () => {},
     disposeTimer: null,
@@ -1405,6 +1419,7 @@ export function __createWorkspaceSessionSyncForTest(input: SyncOptions) {
   syncs.set(key, {
     input,
     openworkToken: input.openworkToken,
+    notifyStreamGenerationChanged: null,
     refs: 1,
     dispose: () => {},
     disposeTimer: null,

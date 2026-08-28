@@ -32,6 +32,8 @@ missing or failed runtime is recorded as a durable failure and moves the
 Automation to needs-attention. Timeouts are terminal receipts rather than
 automatic retries because an agent may already have produced external side
 effects; the user can inspect the native run and choose Run now explicitly.
+Runtime readiness polling retains its pre-existing 120-second cap and terminal,
+non-retryable outcome; signed-preview routing does not add another queued attempt.
 
 Before prompt admission, Den probes and repairs the worker's persisted
 `openwork-cloud` MCP registration for the selected model. A missing Connect
@@ -39,7 +41,7 @@ configuration or model projection becomes durable needs-attention rather than
 a headless run that silently lacks the user's connected services.
 
 The native thread client uses both the collaborator token and the internal
-host credential when it passes through the Cloud worker proxy. No provider
+host credential when it talks directly to the resolved Cloud runtime. No provider
 credential or worker token is copied into the Automation receipt.
 
 ## Relationship to Workflow Automations

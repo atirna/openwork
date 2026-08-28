@@ -105,3 +105,73 @@ export function computeModelAvailability(
 
   return { status: "available" };
 }
+
+/**
+ * How long a catalog-derived "unavailable" verdict must persist before it is
+ * shown. Settings visits and engine reload/restart churn can settle a
+ * momentarily incomplete catalog (e.g. `connected` not yet populated), which
+ * used to flash "Model no longer available" for a beat before the next
+ * refresh restored the model.
+ */
+export const MODEL_UNAVAILABLE_CONFIRMATION_MS = 1_200;
+
+export type UnavailableConfirmationGate = {
+  /**
+   * Confirm one verdict for one model identity. Catalog denials
+   * (`model_missing`, `provider_not_connected`) surface only after they have
+   * persisted for the confirmation window; younger denials render as pending
+   * so a transition blip never flashes the warning or blocks a send. Policy
+   * blocks (`provider_blocked`) are deliberate local state and pass through
+   * immediately, as do `available` and `pending`.
+   */
+  confirm: (
+    model: ModelRef | null | undefined,
+    verdict: ModelAvailability,
+  ) => ModelAvailability;
+  /**
+   * Milliseconds until the youngest tracked denial matures (0 when one is
+   * already mature but not yet re-rendered), or null when nothing is tracked.
+   * Callers use this to schedule a re-evaluation so a genuine denial still
+   * surfaces without further catalog changes.
+   */
+  nextRecheckDelay: (nowMs?: number) => number | null;
+};
+
+export function createUnavailableConfirmationGate(options?: {
+  confirmMs?: number;
+  now?: () => number;
+}): UnavailableConfirmationGate {
+  const confirmMs = options?.confirmMs ?? MODEL_UNAVAILABLE_CONFIRMATION_MS;
+  const now = options?.now ?? Date.now;
+  const firstDeniedAtByModel = new Map<string, number>();
+  const keyOf = (model: ModelRef | null | undefined) =>
+    `${model?.providerID?.trim() ?? ""}:${model?.modelID?.trim() ?? ""}`;
+
+  return {
+    confirm(model, verdict) {
+      const key = keyOf(model);
+      if (verdict.status !== "unavailable" || verdict.reason === "provider_blocked") {
+        firstDeniedAtByModel.delete(key);
+        return verdict;
+      }
+      const current = now();
+      const deniedAt = firstDeniedAtByModel.get(key);
+      if (deniedAt === undefined) {
+        firstDeniedAtByModel.set(key, current);
+        return { status: "pending" };
+      }
+      if (current - deniedAt < confirmMs) return { status: "pending" };
+      return verdict;
+    },
+    nextRecheckDelay(nowMs) {
+      const current = nowMs ?? now();
+      let next: number | null = null;
+      for (const deniedAt of firstDeniedAtByModel.values()) {
+        const remaining = confirmMs - (current - deniedAt);
+        if (remaining <= 0) return 0;
+        next = next === null ? remaining : Math.min(next, remaining);
+      }
+      return next;
+    },
+  };
+}

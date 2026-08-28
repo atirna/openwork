@@ -30,6 +30,7 @@ export interface WorldOrg {
     };
   }[];
   connections?: { name: string; witness: string }[];
+  llmProviders?: WorldLlmProvider[];
   desktopPolicies?: {
     name: string;
     priority?: number;
@@ -37,6 +38,15 @@ export interface WorldOrg {
     members?: string[];
     teams?: { name: string; members: string[] }[];
   }[];
+}
+
+export interface WorldLlmProvider {
+  kind: "litellm-per-member";
+  name: string;
+  providerId: string;
+  env: string;
+  witness: string;
+  modelName?: string;
 }
 
 export interface WorldApp {
@@ -48,12 +58,22 @@ export interface WorldApp {
   sessions?: readonly string[];
 }
 
-export interface WorldWitness {
+export interface WorldMcpWitness {
   kind: "mcp";
   allowUnauthenticatedMcp?: boolean;
   profileId?: EnterpriseMcpProfileId;
   fault?: string;
 }
+
+export interface WorldLiteLlmWitness {
+  kind: "litellm";
+  modelId: string;
+  reply: string;
+  maxInputTokens?: number;
+  maxOutputTokens?: number;
+}
+
+export type WorldWitness = WorldMcpWitness | WorldLiteLlmWitness;
 
 export interface WorldTopology {
   den: {
@@ -106,6 +126,15 @@ const worldConnectionSchema = z.strictObject({
   witness: z.string(),
 });
 
+const worldLlmProviderSchema = z.strictObject({
+  kind: z.literal("litellm-per-member"),
+  name: z.string().trim().min(1).max(255),
+  providerId: z.string().trim().min(1).max(255),
+  env: z.string().trim().min(1).max(255),
+  witness: z.string().trim().min(1),
+  modelName: z.string().trim().min(1).max(255).optional(),
+});
+
 const worldDesktopPolicySchema = z.strictObject({
   name: z.string(),
   priority: z.number().optional(),
@@ -126,6 +155,7 @@ const worldOrgSchema = z.strictObject({
   capabilities: z.record(z.string(), z.boolean()).optional(),
   plugins: z.array(worldPluginSchema).optional(),
   connections: z.array(worldConnectionSchema).optional(),
+  llmProviders: z.array(worldLlmProviderSchema).optional(),
   desktopPolicies: z.array(worldDesktopPolicySchema).optional(),
 });
 
@@ -172,7 +202,7 @@ const enterpriseMcpProfileIdSchema = z.enum([
   "slack-user-mcp",
 ]);
 
-const worldWitnessSchema = z.strictObject({
+const worldMcpWitnessSchema = z.strictObject({
   kind: z.literal("mcp"),
   allowUnauthenticatedMcp: z.boolean().optional(),
   profileId: enterpriseMcpProfileIdSchema.optional(),
@@ -186,6 +216,16 @@ const worldWitnessSchema = z.strictObject({
     });
   }
 });
+
+const positiveTokenLimitSchema = z.number().finite().positive();
+const worldLiteLlmWitnessSchema = z.strictObject({
+  kind: z.literal("litellm"),
+  modelId: z.string().trim().min(1).max(255),
+  reply: z.string().min(1),
+  maxInputTokens: positiveTokenLimitSchema.optional(),
+  maxOutputTokens: positiveTokenLimitSchema.optional(),
+});
+const worldWitnessSchema = z.discriminatedUnion("kind", [worldMcpWitnessSchema, worldLiteLlmWitnessSchema]);
 
 const worldPortsSchema = z.strictObject({
   api: z.number().int().min(1024).max(65_535),
@@ -292,9 +332,10 @@ function validateReferences(topology: WorldTopology): void {
       seededOrg.capabilities !== undefined
       || seededOrg.plugins !== undefined
       || seededOrg.connections !== undefined
+      || seededOrg.llmProviders !== undefined
       || seededOrg.desktopPolicies !== undefined
     ) {
-      throw new Error('den.seed "demo-org" cannot define capabilities, plugins, connections, or desktopPolicies: v1 limitation: the demo seed owns these content nouns.');
+      throw new Error('den.seed "demo-org" cannot define capabilities, plugins, connections, llmProviders, or desktopPolicies: v1 limitation: the demo seed owns these content nouns.');
     }
   }
 
@@ -303,19 +344,40 @@ function validateReferences(topology: WorldTopology): void {
       org.capabilities !== undefined
       || org.plugins !== undefined
       || org.connections !== undefined
+      || org.llmProviders !== undefined
       || org.desktopPolicies !== undefined
     ) {
       throw new Error(
-        `World org ${JSON.stringify(orgName)} cannot define capabilities, plugins, connections, or desktopPolicies: v1 limitation: these content nouns may only be defined on primary org ${JSON.stringify(primaryOrg)}.`,
+        `World org ${JSON.stringify(orgName)} cannot define capabilities, plugins, connections, llmProviders, or desktopPolicies: v1 limitation: these content nouns may only be defined on primary org ${JSON.stringify(primaryOrg)}.`,
       );
     }
   }
 
   for (const [orgName, org] of Object.entries(topology.den.orgs)) {
     for (const connection of org.connections ?? []) {
-      if (!Object.hasOwn(topology.witnesses ?? {}, connection.witness)) {
+      const witness = topology.witnesses?.[connection.witness];
+      if (!witness) {
         throw new Error(
           `World org ${JSON.stringify(orgName)} connection ${JSON.stringify(connection.name)} references witness ${JSON.stringify(connection.witness)}, which does not exist in topology.witnesses.`,
+        );
+      }
+      if (witness.kind !== "mcp") {
+        throw new Error(
+          `World org ${JSON.stringify(orgName)} connection ${JSON.stringify(connection.name)} must reference an MCP witness; ${JSON.stringify(connection.witness)} has kind ${JSON.stringify(witness.kind)}.`,
+        );
+      }
+    }
+
+    for (const provider of org.llmProviders ?? []) {
+      const witness = topology.witnesses?.[provider.witness];
+      if (!witness) {
+        throw new Error(
+          `World org ${JSON.stringify(orgName)} LLM provider ${JSON.stringify(provider.name)} references witness ${JSON.stringify(provider.witness)}, which does not exist in topology.witnesses.`,
+        );
+      }
+      if (witness.kind !== "litellm") {
+        throw new Error(
+          `World org ${JSON.stringify(orgName)} LLM provider ${JSON.stringify(provider.name)} must reference a LiteLLM witness; ${JSON.stringify(provider.witness)} has kind ${JSON.stringify(witness.kind)}.`,
         );
       }
     }

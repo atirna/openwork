@@ -112,6 +112,7 @@ export function isSupportedWorkspaceTextFilePath(relativePath: string): boolean 
     ".md",
     ".mdx",
     ".markdown",
+    ".mmd",
     ".csv",
     ".tsv",
     ".json",
@@ -230,7 +231,7 @@ type ArtifactTargetInput = {
 
 function artifactPreviewForPath(path: string): string {
   const lowered = path.toLowerCase();
-  if (/\.(md|markdown|mdx)$/.test(lowered)) return "markdown";
+  if (/\.(md|markdown|mdx|mmd)$/.test(lowered)) return "markdown";
   if (/\.(csv|tsv|xlsx|xls|ods)$/.test(lowered)) return "sheet";
   if (/\.(ppt|pptx|pptm|pot|potx|odp|key|sxi)$/.test(lowered)) return "slides";
   if (lowered.endsWith(".docx")) return "document";

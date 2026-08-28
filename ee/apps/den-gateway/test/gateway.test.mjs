@@ -75,6 +75,7 @@ function readyResolvePayload(url, input = {}) {
     url,
     clientToken: input.clientToken ?? "client-token",
     hostToken: input.hostToken ?? "host-token",
+    expiresAt: input.expiresAt ?? new Date(Date.now() + 60_000).toISOString(),
   }
 }
 
@@ -468,6 +469,41 @@ describe("den-gateway proxy", () => {
     ])
   })
 
+  test("never caches a ready resolution beyond its signed-preview safety time", async () => {
+    const upstream = startUpstream()
+    let now = 1_000
+    let resolveResponses = 0
+    const denApi = startDenApi(() => {
+      resolveResponses += 1
+      return readyResolvePayload(serverBase(upstream.server), {
+        clientToken: `client-token-${resolveResponses}`,
+        hostToken: `host-token-${resolveResponses}`,
+        expiresAt: new Date(resolveResponses === 1 ? 1_500 : 10_000).toISOString(),
+      })
+    })
+    const gateway = startGateway({
+      denApiBase: serverBase(denApi.server),
+      gatewayKey: "gateway-secret",
+      resolveTtlMs: 15_000,
+      now: () => now,
+    })
+    const base = serverBase(gateway)
+    const headers = { Authorization: "Bearer den-expiry-bound" }
+
+    expect((await fetch(`${base}/status`, { headers })).status).toBe(200)
+    now = 1_400
+    expect((await fetch(`${base}/capabilities`, { headers })).status).toBe(200)
+    now = 1_501
+    expect((await fetch(`${base}/whoami`, { headers })).status).toBe(200)
+
+    expect(denApi.observed.calls).toBe(2)
+    expect(upstream.observed.requests.map((request) => request.authorization)).toEqual([
+      "Bearer client-token-1",
+      "Bearer client-token-1",
+      "Bearer client-token-2",
+    ])
+  })
+
   test("proxies namespaced allowlist subpaths", async () => {
     const upstream = startUpstream()
     const denApi = startDenApi(() => readyResolvePayload(serverBase(upstream.server)))
@@ -562,7 +598,7 @@ describe("den-gateway proxy", () => {
 
   test("returns non-ready JSON status and does not proxy", async () => {
     const upstream = startUpstream()
-    const denApi = startDenApi(() => ({ status: "waking", url: null, clientToken: null, hostToken: null }))
+    const denApi = startDenApi(() => ({ status: "waking", url: null, clientToken: null, hostToken: null, expiresAt: null }))
     const gateway = startGateway({ denApiBase: serverBase(denApi.server), gatewayKey: "gateway-secret" })
 
     const base = serverBase(gateway)

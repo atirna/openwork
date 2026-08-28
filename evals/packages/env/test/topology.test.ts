@@ -182,7 +182,8 @@ test("demo seed requires one content-free organization", () => {
     () => defineWorld({
       den: { orgs: { acme: { plugins: [] } }, seed: "demo-org" },
     }),
-    /cannot define capabilities, plugins, connections, or desktopPolicies: v1 limitation/,
+    // Anchor on the stable reason, not the growing noun enumeration.
+    /v1 limitation: the demo seed owns these content nouns/,
   );
 });
 
@@ -256,6 +257,50 @@ test("defineWorld rejects connections whose witness is not declared", () => {
       },
     }),
     /connection "Notion" references witness "notion", which does not exist in topology\.witnesses/,
+  );
+  assert.throws(
+    () => defineWorld({
+      den: {
+        orgs: {
+          acme: { connections: [{ name: "Notion", witness: "notion" }] },
+        },
+      },
+      witnesses: {
+        notion: { kind: "litellm", modelId: "witness-model", reply: "ok" },
+      },
+    }),
+    /connection "Notion" must reference an MCP witness; "notion" has kind "litellm"/,
+  );
+});
+
+test("defineWorld constrains LLM providers to declared LiteLLM witnesses", () => {
+  const provider = {
+    kind: "litellm-per-member" as const,
+    name: "Per-Member Gateway",
+    providerId: "openwork-litellm",
+    env: "LITELLM_PER_MEMBER_API_KEY",
+    witness: "litellm",
+  };
+  const world = defineWorld({
+    den: { orgs: { acme: { llmProviders: [provider] } } },
+    witnesses: {
+      litellm: { kind: "litellm", modelId: "witness-model", reply: "ok" },
+    },
+  });
+  assert.deepEqual(world.topology.den.orgs.acme?.llmProviders, [provider]);
+
+  assert.throws(
+    () => defineWorld({
+      den: { orgs: { acme: { llmProviders: [provider] } } },
+    }),
+    /LLM provider "Per-Member Gateway" references witness "litellm", which does not exist in topology\.witnesses/,
+  );
+  assert.throws(
+    () => defineWorld({
+      den: { orgs: { acme: { llmProviders: [provider] } } },
+      witnesses: { litellm: { kind: "mcp" } },
+    }),
+    /LLM provider "Per-Member Gateway" must reference a LiteLLM witness; "litellm" has kind "mcp"/,
   );
 });
 

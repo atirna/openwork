@@ -16,6 +16,7 @@ import type {
 import type {
   Automation,
   AutomationAction,
+  AutomationDesktopRunnerCapability,
   AutomationError,
   AutomationRevision,
   AutomationRun,
@@ -878,6 +879,7 @@ export class DenAutomationRepository implements AutomationRepository {
     runnerId: string
     protocolVersion: number
     supportedExecutionTargets: Array<"desktop">
+    capabilities: AutomationDesktopRunnerCapability[]
     appVersion: string
     platform: "darwin" | "win32" | "linux"
     concurrency: number
@@ -897,6 +899,7 @@ export class DenAutomationRepository implements AutomationRepository {
         owner_member_id: normalizeMemberId(input.ownerMemberId),
         protocol_version: input.protocolVersion,
         supported_execution_targets: input.supportedExecutionTargets,
+        capabilities: input.capabilities,
         app_version: input.appVersion,
         platform: input.platform,
         concurrency: input.concurrency,
@@ -906,6 +909,7 @@ export class DenAutomationRepository implements AutomationRepository {
       }).onDuplicateKeyUpdate({ set: {
         protocol_version: input.protocolVersion,
         supported_execution_targets: input.supportedExecutionTargets,
+        capabilities: input.capabilities,
         app_version: input.appVersion,
         platform: input.platform,
         concurrency: input.concurrency,
@@ -923,6 +927,8 @@ export class DenAutomationRepository implements AutomationRepository {
         protocol_version: input.protocolVersion,
         supported_execution_targets: input.supportedExecutionTargets.join(","),
         supported_execution_target_count: input.supportedExecutionTargets.length,
+        capabilities: input.capabilities.join(","),
+        capability_count: input.capabilities.length,
         app_version_length: input.appVersion.length,
         platform: input.platform,
         concurrency: input.concurrency,
@@ -1157,6 +1163,22 @@ export class DenAutomationRepository implements AutomationRepository {
         eq(AutomationRunnerTable.owner_member_id, normalizeMemberId(input.ownerMemberId)),
       )).orderBy(desc(AutomationRunnerTable.last_seen_at)).limit(1)
     return rows[0]?.lastSeenAt?.getTime() ?? null
+  }
+
+  /** Latest registration for one capability; legacy runner rows have no capabilities. */
+  async desktopRunnerCapabilityLastSeenAt(input: {
+    organizationId: string
+    ownerMemberId: string
+    capability: AutomationDesktopRunnerCapability
+  }): Promise<number | null> {
+    const rows = await db.select({
+      capabilities: AutomationRunnerTable.capabilities,
+      lastSeenAt: AutomationRunnerTable.last_seen_at,
+    }).from(AutomationRunnerTable).where(and(
+      eq(AutomationRunnerTable.organization_id, normalizeOrganizationId(input.organizationId)),
+      eq(AutomationRunnerTable.owner_member_id, normalizeMemberId(input.ownerMemberId)),
+    )).orderBy(desc(AutomationRunnerTable.last_seen_at)).limit(100)
+    return rows.find((row) => (row.capabilities ?? []).includes(input.capability))?.lastSeenAt.getTime() ?? null
   }
 
   private async missedDesktopReason(input: {

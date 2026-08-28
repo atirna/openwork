@@ -10,7 +10,7 @@ import {
   AGENT_CONTEXT_DIAGNOSTICS_REQUEST_TIMEOUT_MS,
   requestAgentContextDiagnosticsPayload,
 } from "./agent-context-diagnostics-transport";
-import { desktopFetch, desktopFetchAgentContextDiagnostics } from "./desktop";
+import { desktopFetch, desktopFetchAgentContextDiagnostics, desktopUploadMultipart, electronLocalPathForFile } from "./desktop";
 import { isOpenworkGatewayRuntime } from "./gateway-runtime";
 import { isDesktopRuntime } from "./runtime-env";
 import type { ExecResult, OpencodeConfigFile, WorkspaceInfo, WorkspaceList } from "./desktop";
@@ -1327,6 +1327,15 @@ function isStreamUrl(url: string): boolean {
   return OPENWORK_STREAM_URL_RE.test(url);
 }
 
+function isLoopbackUrl(url: string): boolean {
+  try {
+    const hostname = new URL(url).hostname;
+    return hostname === "127.0.0.1" || hostname === "localhost" || hostname === "[::1]";
+  } catch {
+    return false;
+  }
+}
+
 const resolveFetch = (url?: string) => {
   if (!isDesktopRuntime()) return globalThis.fetch;
   if (url && isStreamUrl(url)) {
@@ -2181,23 +2190,39 @@ export function createOpenworkServerClient(options: { baseUrl: string; token?: s
         hostToken,
         method: "DELETE",
       }),
+    uploadInboxPrefersOriginalFile: (file: File) =>
+      isDesktopRuntime() && !isLoopbackUrl(baseUrl) && electronLocalPathForFile(file) !== null,
     uploadInbox: async (workspaceId: string, file: File, options?: { path?: string }) => {
       const id = workspaceId.trim();
       if (!id) throw new Error("workspaceId is required");
       if (!file) throw new Error("file is required");
-      const form = new FormData();
-      form.append("file", file);
-      if (options?.path?.trim()) {
-        form.append("path", options.path.trim());
+      const uploadPath = `/workspace/${encodeURIComponent(id)}/inbox`;
+      let result: { ok: boolean; status: number; text: string };
+      if (isDesktopRuntime() && !isLoopbackUrl(baseUrl) && electronLocalPathForFile(file) !== null) {
+        const response = await desktopUploadMultipart(file, {
+          url: `${baseUrl}${uploadPath}`,
+          method: "POST",
+          headers: buildAuthHeaders(token, hostToken),
+          fields: options?.path?.trim() ? { path: options.path.trim() } : undefined,
+          timeoutMs: timeouts.binary,
+        });
+        result = {
+          ok: response.status >= 200 && response.status < 300,
+          status: response.status,
+          text: response.body,
+        };
+      } else {
+        const form = new FormData();
+        form.append("file", file);
+        if (options?.path?.trim()) form.append("path", options.path.trim());
+        result = await requestMultipartRaw(baseUrl, uploadPath, {
+          token,
+          hostToken,
+          method: "POST",
+          body: form,
+          timeoutMs: timeouts.binary,
+        });
       }
-
-      const result = await requestMultipartRaw(baseUrl, `/workspace/${encodeURIComponent(id)}/inbox`, {
-        token,
-        hostToken,
-        method: "POST",
-        body: form,
-        timeoutMs: timeouts.binary,
-      });
 
       if (!result.ok) {
         let message = result.text.trim();

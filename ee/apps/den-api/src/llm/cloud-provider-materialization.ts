@@ -9,7 +9,7 @@ import {
 import { db } from "../db.js"
 import { env } from "../env.js"
 import { appLogger } from "../observability/logger.js"
-import { fetchWithConnectRetry, previewFetch } from "../workers/preview-fetch.js"
+import { fetchPreviewNoRedirect, fetchWithConnectRetry, previewFetch } from "../workers/preview-fetch.js"
 import { decodeProviderCredential, readProviderEnvNames, selectLegacyScalarCredentialEnvName, selectPrimaryCredentialEnvName } from "./provider-credentials.js"
 
 type JsonRecord = Record<string, unknown>
@@ -423,7 +423,7 @@ async function fetchWithTimeout(fetchImpl: FetchImpl, url: string, init: Request
   const controller = new AbortController()
   const timeout = setTimeout(() => controller.abort(), requestTimeoutMs)
   try {
-    return await fetchImpl(url, { ...init, signal: controller.signal })
+    return await fetchPreviewNoRedirect(fetchImpl, url, { ...init, signal: controller.signal })
   } finally {
     clearTimeout(timeout)
   }

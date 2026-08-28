@@ -23,6 +23,8 @@ import type { App } from "./desktop-app.ts";
 import { defaultReuseAdmin, personDefaults, server } from "./den.ts";
 import type { Den } from "./den.ts";
 import { DEMO_PASSWORD, ensureKindDenReady, exposeEndpointHandles, kubeProfileConfig } from "./kind-stack.ts";
+import { liteLlm } from "./litellm.ts";
+import type { LiteLlmHandle } from "./litellm.ts";
 import { mcpMock } from "./mock.ts";
 import { resolvePlace, validateDatabaseName } from "./place.ts";
 import type { Place } from "./place.ts";
@@ -50,8 +52,20 @@ export interface World extends AsyncDisposable {
   topology: WorldTopology;
   den: Den;
   apps: Record<string, App>;
+  llmProviders: Record<string, WorldLlmProviderRuntime>;
   app(name: string): App;
   snapshotPath: string;
+}
+
+export interface WorldLlmProviderRuntime {
+  providerId: string;
+  providerRecordId: string;
+  witness: string;
+  baseUrl: string;
+  modelId: string;
+  maxInputTokens: number;
+  maxOutputTokens: number;
+  metadataAction: "updated" | "unchanged";
 }
 
 export interface WorldSnapshotResolved {
@@ -298,7 +312,7 @@ function validateUntrustedSnapshot(snapshot: WorldSnapshot): void {
     }
   }
   for (const [name, witness] of Object.entries(snapshot.topology.witnesses ?? {})) {
-    if (witness.fault !== undefined && !SNAPSHOT_FAULT.test(witness.fault)) {
+    if (witness.kind === "mcp" && witness.fault !== undefined && !SNAPSHOT_FAULT.test(witness.fault)) {
       rejectSnapshotField(`topology.witnesses.${name}.fault`, witness.fault, "expected a lowercase fault id containing only letters, numbers, or hyphens");
     }
   }
@@ -382,6 +396,128 @@ function snapshotTopology(topology: WorldTopology): WorldTopology {
 
 function auth(token: string): Record<string, string> {
   return { authorization: `Bearer ${token}` };
+}
+
+interface ExampleProvisionerModule {
+  reconcileMemberKeys(input: {
+    denApiUrl: string;
+    denToken: string;
+    orgId: string;
+    providerId: string;
+    liteLlmBaseUrl: string;
+    liteLlmMasterKey: string;
+    models: string[];
+  }): Promise<unknown>;
+}
+
+function isExampleProvisionerModule(value: unknown): value is ExampleProvisionerModule {
+  return isRecord(value) && typeof value.reconcileMemberKeys === "function";
+}
+
+async function exampleProvisioner(): Promise<ExampleProvisionerModule> {
+  const url = new URL("../../../../examples/litellm-per-member-keys/provision.mjs", import.meta.url).href;
+  const imported: unknown = await import(url);
+  if (!isExampleProvisionerModule(imported)) {
+    throw new Error("The LiteLLM per-member example did not export reconcileMemberKeys.");
+  }
+  return imported;
+}
+
+function metadataResult(value: unknown, modelId: string): {
+  action: "updated" | "unchanged";
+  maxInputTokens: number;
+  maxOutputTokens: number;
+} {
+  const metadata = isRecord(value) && isRecord(value.modelMetadata) ? value.modelMetadata : null;
+  const models = metadata && Array.isArray(metadata.models) ? metadata.models.filter(isRecord) : [];
+  const model = models.find((entry) => entry.id === modelId);
+  if (!metadata
+    || (metadata.action !== "updated" && metadata.action !== "unchanged")
+    || !model
+    || typeof model.maxInputTokens !== "number"
+    || typeof model.maxOutputTokens !== "number") {
+    throw new Error(`LiteLLM example reconciliation returned invalid metadata for model ${JSON.stringify(modelId)}.`);
+  }
+  return {
+    action: metadata.action,
+    maxInputTokens: model.maxInputTokens,
+    maxOutputTokens: model.maxOutputTokens,
+  };
+}
+
+async function provisionWorldLlmProviders(
+  den: Den,
+  organizationId: string,
+  org: WorldOrg,
+  topology: WorldTopology,
+  gateways: Record<string, LiteLlmHandle>,
+): Promise<Record<string, WorldLlmProviderRuntime>> {
+  const providers = org.llmProviders ?? [];
+  if (providers.length === 0) return {};
+  const provisioner = await exampleProvisioner();
+  const realized: Record<string, WorldLlmProviderRuntime> = {};
+  for (const provider of providers) {
+    const witness = topology.witnesses?.[provider.witness];
+    const gateway = gateways[provider.witness];
+    if (!witness || witness.kind !== "litellm" || !gateway) {
+      throw new Error(`LiteLLM witness ${JSON.stringify(provider.witness)} was not booted for provider ${JSON.stringify(provider.name)}.`);
+    }
+    const route = "/v1/llm-providers";
+    const created = await denFetch(den.admin, route, {
+      method: "POST",
+      headers: {
+        ...auth(den.admin.token),
+        "content-type": "application/json",
+        "x-openwork-org-id": organizationId,
+      },
+      body: JSON.stringify({
+        name: provider.name,
+        source: "custom",
+        customConfig: {
+          id: provider.providerId,
+          name: provider.name,
+          npm: "@ai-sdk/openai-compatible",
+          env: [provider.env],
+          api: gateway.baseUrl,
+          models: [{ id: witness.modelId, name: provider.modelName ?? witness.modelId }],
+        },
+        credentialMode: "per_member",
+        allMembers: true,
+        memberIds: [],
+        teamIds: [],
+      }),
+    });
+    const createdProvider = isRecord(created.body) && isRecord(created.body.llmProvider)
+      ? created.body.llmProvider
+      : null;
+    const providerRecordId = createdProvider && typeof createdProvider.id === "string"
+      ? createdProvider.id
+      : "";
+    if (created.response.status !== 201 || !providerRecordId) {
+      throw new Error(`POST ${route} failed for provider ${JSON.stringify(provider.name)}: HTTP ${created.response.status} ${created.text.slice(0, 500)}`);
+    }
+    const reconciled = await provisioner.reconcileMemberKeys({
+      denApiUrl: den.ref.apiUrl,
+      denToken: den.admin.token,
+      orgId: organizationId,
+      providerId: providerRecordId,
+      liteLlmBaseUrl: gateway.baseUrl,
+      liteLlmMasterKey: gateway.apiKey,
+      models: [witness.modelId],
+    });
+    const metadata = metadataResult(reconciled, witness.modelId);
+    realized[provider.providerId] = {
+      providerId: provider.providerId,
+      providerRecordId,
+      witness: provider.witness,
+      baseUrl: gateway.baseUrl,
+      modelId: witness.modelId,
+      maxInputTokens: metadata.maxInputTokens,
+      maxOutputTokens: metadata.maxOutputTokens,
+      metadataAction: metadata.action,
+    };
+  }
+  return realized;
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -507,7 +643,9 @@ async function realizePrimaryOrganizationContent(
   den: Den,
   organizationId: string,
   org: WorldOrg,
-): Promise<void> {
+  topology: WorldTopology,
+  gateways: Record<string, LiteLlmHandle>,
+): Promise<Record<string, WorldLlmProviderRuntime>> {
   if (org.capabilities !== undefined) {
     const route = `/v1/admin/organizations/${organizationId}/capabilities`;
     const updated = await denFetch(den.admin, route, {
@@ -555,6 +693,7 @@ async function realizePrimaryOrganizationContent(
   for (const policy of org.desktopPolicies ?? []) {
     await createDesktopPolicy(den, organizationId, policy);
   }
+  return provisionWorldLlmProviders(den, organizationId, org, topology, gateways);
 }
 
 async function addPrimaryAdminToOrganization(
@@ -645,14 +784,16 @@ function extraOrganizationMembers(
 
 function witnessMocks(topology: WorldTopology) {
   return Object.fromEntries(
-    Object.entries(topology.witnesses ?? {}).map(([name, witness]) => [
-      name,
-      mcpMock({
-        allowUnauthenticatedMcp: witness.allowUnauthenticatedMcp,
-        profileId: witness.profileId,
-        fault: witness.fault,
-      }),
-    ]),
+    Object.entries(topology.witnesses ?? {}).flatMap(([name, witness]) => witness.kind === "mcp"
+      ? [[
+          name,
+          mcpMock({
+            allowUnauthenticatedMcp: witness.allowUnauthenticatedMcp,
+            profileId: witness.profileId,
+            fault: witness.fault,
+          }),
+        ]]
+      : []),
   );
 }
 
@@ -984,6 +1125,21 @@ export async function startWorld(
   const scope = await Effect.runPromise(Scope.make("sequential"));
 
   const acquisition = Effect.gen(function*() {
+    const gateways: Record<string, LiteLlmHandle> = {};
+    for (const [witnessName, witness] of Object.entries(topology.witnesses ?? {})) {
+      if (witness.kind !== "litellm") continue;
+      gateways[witnessName] = yield* Effect.acquireRelease(
+        Effect.promise(() => liteLlm({
+          place,
+          modelId: witness.modelId,
+          reply: witness.reply,
+          database: true,
+          maxInputTokens: witness.maxInputTokens,
+          maxOutputTokens: witness.maxOutputTokens,
+        })),
+        (gateway) => Effect.promise(() => gateway[Symbol.asyncDispose]()),
+      );
+    }
     const den = yield* Effect.acquireRelease(
       Effect.promise(() => sharedProductionState
         ? Promise.resolve(disabledDen())
@@ -1016,6 +1172,7 @@ export async function startWorld(
           })),
       (booted) => Effect.promise(() => booted[Symbol.asyncDispose]()),
     );
+    const llmProviders: Record<string, WorldLlmProviderRuntime> = {};
     if (
       primaryOrgName !== undefined
       && primaryOrg !== undefined
@@ -1039,7 +1196,16 @@ export async function startWorld(
       }
 
       // Local/Daytona DBs are ephemeral; attached-Den reuse can leak rows not covered by organization deletion.
-      yield* Effect.promise(() => realizePrimaryOrganizationContent(den, primaryOrganizationId, primaryOrg));
+      Object.assign(
+        llmProviders,
+        yield* Effect.promise(() => realizePrimaryOrganizationContent(
+          den,
+          primaryOrganizationId,
+          primaryOrg,
+          topology,
+          gateways,
+        )),
+      );
     }
 
     const apps: Record<string, App> = {};
@@ -1104,7 +1270,7 @@ export async function startWorld(
       });
       await chmod(snapshotPath, 0o600);
     });
-    return { den, apps, snapshotPath };
+    return { den, apps, llmProviders, snapshotPath };
   });
 
   try {
@@ -1115,6 +1281,7 @@ export async function startWorld(
       topology,
       den: acquired.den,
       apps: acquired.apps,
+      llmProviders: acquired.llmProviders,
       app(appName) {
         const found = acquired.apps[appName];
         if (!found) {

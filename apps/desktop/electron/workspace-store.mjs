@@ -928,6 +928,21 @@ export function createWorkspaceStore({
       .filter(Boolean);
   }
 
+  // Binary transfers must derive authority only from app-owned state in
+  // userData, never from workspace-writable configuration, so this list is
+  // intentionally not exposed to that surface (see listLocalWorkspacePaths).
+  async function listRemoteWorkspaceUrlPrefixes() {
+    const prefixes = new Set();
+    for (const workspace of (await readWorkspaceState()).workspaces) {
+      if (workspace?.workspaceType !== "remote") continue;
+      for (const value of [workspace.baseUrl, workspace.openworkHostUrl]) {
+        const raw = typeof value === "string" ? value.trim() : "";
+        if (raw) prefixes.add(raw);
+      }
+    }
+    return [...prefixes];
+  }
+
   function workspacePathKey(workspace) {
     return normalizeWorkspacePathKey(workspace.path);
   }
@@ -1219,6 +1234,7 @@ export function createWorkspaceStore({
     getDesktopBootstrapConfig,
     importConfig,
     listLocalWorkspacePaths,
+    listRemoteWorkspaceUrlPrefixes,
     migrateLegacyElectronWorkspaceStateIfNeeded,
     readDesktopBootstrapConfigSync,
     readWorkspaceOpenworkConfig,

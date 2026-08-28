@@ -3,6 +3,7 @@ import {
   useCallback,
   useEffect,
   useMemo,
+  useReducer,
   useRef,
   useState,
 } from "react";
@@ -117,7 +118,7 @@ import { composerAttachmentsToWorkspaceFileParts } from "@/react-app/domains/ses
 import { useSessionInteractions } from "@/react-app/domains/session/sync/use-session-interactions";
 import { useModelBehavior } from "@/react-app/domains/session/surface/use-model-behavior";
 import { getModelBehaviorSummary, nextModelBehaviorValue, previousModelBehaviorValue } from "@/app/lib/model-behavior";
-import { computeModelAvailability, type ModelAvailability } from "@/react-app/domains/session/surface/model-availability";
+import { computeModelAvailability, createUnavailableConfirmationGate, type ModelAvailability } from "@/react-app/domains/session/surface/model-availability";
 import { useSessionFindStore } from "@/react-app/domains/session/surface/find-store";
 import { useModelPicker } from "@/react-app/domains/session/modals/use-model-picker";
 import { getSessionModelSelection, useSessionModelStore } from "@/react-app/domains/session/surface/session-model-store";
@@ -1109,8 +1110,20 @@ export function SessionRoute() {
   // directory, so a workspace switch supersedes the old catalog (the new key
   // reads as unsettled → pending) instead of judging the new workspace with
   // stale data.
+  //
+  // Catalog denials are additionally confirmation-gated: Settings visits and
+  // engine reload churn can settle a momentarily incomplete catalog, and a
+  // denial younger than the confirmation window renders as pending instead of
+  // flashing "Model no longer available" during the transition. The recheck
+  // tick re-evaluates tracked denials so a genuine one still surfaces once it
+  // matures, even without further catalog changes.
+  const modelAvailabilityGate = useMemo(() => createUnavailableConfirmationGate(), []);
+  const [availabilityRecheckTick, bumpAvailabilityRecheck] = useReducer(
+    (value: number) => value + 1,
+    0,
+  );
   const resolveModelAvailability = useCallback((model: ModelRef | null): ModelAvailability =>
-    computeModelAvailability(model, {
+    modelAvailabilityGate.confirm(model, computeModelAvailability(model, {
       workspaceReady: Boolean(selectedWorkspaceId && opencodeClient),
       loading,
       signedIn: denAuth.isSignedIn,
@@ -1120,18 +1133,27 @@ export function SessionRoute() {
       checkRestriction: checkDesktopRestriction,
       cloudProviderList,
       providerList: providerListQuery.data,
-    }), [
+    })), [
+    // The tick only forces re-evaluation of denials tracked by the gate.
+    availabilityRecheckTick,
     checkDesktopRestriction,
     cloudProviderList,
     cloudProviderSyncReady,
     denAuth.isSignedIn,
     loading,
+    modelAvailabilityGate,
     opencodeClient,
     openWorkModelsSyncing,
     providerListQuery.data,
     restrictToCloudProviders,
     selectedWorkspaceId,
   ]);
+  useEffect(() => {
+    const delay = modelAvailabilityGate.nextRecheckDelay();
+    if (delay === null) return;
+    const timer = window.setTimeout(() => bumpAvailabilityRecheck(), delay + 16);
+    return () => window.clearTimeout(timer);
+  }, [modelAvailabilityGate, resolveModelAvailability]);
   const selectedModelUnavailable =
     resolveModelAvailability(local.prefs.defaultModel ?? null).status === "unavailable";
   // The composer the user is looking at: the selected conversation's

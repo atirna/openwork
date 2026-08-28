@@ -33,17 +33,6 @@ const WorkspaceFileTree = lazy(() =>
 );
 
 const EMPTY_TRANSCRIPT_TARGETS: OpenTarget[] = [];
-const MARKDOWN_PRIMITIVE_EVAL_ARTIFACT_PATH = "artifacts/markdown-primitive-proof.md";
-const MARKDOWN_PRIMITIVE_EVAL_ARTIFACT_NAME = "markdown-primitive-proof.md";
-
-function isMarkdownPrimitiveEvalArtifact(target: OpenTarget) {
-  return import.meta.env.DEV &&
-    target.kind === "file" &&
-    target.reason === "eval" &&
-    target.value === MARKDOWN_PRIMITIVE_EVAL_ARTIFACT_PATH &&
-    target.name === MARKDOWN_PRIMITIVE_EVAL_ARTIFACT_NAME;
-}
-
 type ArtifactPanelProps = {
   sessionId: string;
   tab: ArtifactPanelTab;
@@ -111,11 +100,10 @@ function ArtifactPanelView({ sessionId, client, workspaceId, workspaceRoot, isRe
   const [draft, setDraft] = useState("");
   const lastSyncedRef = useRef<string | null>(null);
   const failedDraftRef = useRef<string | null>(null);
-  // Markdown and plain text open straight into the CodeMirror editor, and
-  // code opens straight into Pierre's highlighted editor. Only HTML stays
-  // behind the Edit toggle, because its default view is the rendered page.
-  const isDirectTextEdit = isTextContent(target) &&
-    (target.preview === "text" || (target.preview === "markdown" && !isMarkdownPrimitiveEvalArtifact(target)));
+  const isMermaidArtifact = target.kind === "file" && /\.mmd$/i.test(target.value);
+  // Plain text opens directly in CodeMirror. Markdown and HTML default to
+  // their rendered previews and retain the existing Edit toggle.
+  const isDirectTextEdit = isTextContent(target) && target.preview === "text";
   const isDirectCodeEdit = target.kind === "file" && target.preview === "code";
   const canUseDesktopWorkspaceActions = !isRemoteWorkspace && platform.capabilities.revealInFileManager;
   const canUseDesktopFileActions = target.kind === "file" && canUseDesktopWorkspaceActions;
@@ -419,7 +407,7 @@ function ArtifactPanelView({ sessionId, client, workspaceId, workspaceRoot, isRe
         ) : data?.kind === "text" && (editing || isDirectTextEdit) ? (
           <TextEditor value={draft} language={target.preview === "markdown" ? "markdown" : "text"} onChange={setDraft} />
         ) : target.preview === "markdown" && data?.kind === "text" ? (
-          <MarkdownPreview content={data.data} />
+          <MarkdownPreview content={data.data} mermaidSource={isMermaidArtifact} />
         ) : target.preview === "code" && data?.kind === "text" ? (
           <Suspense fallback={<PreviewLoading />}>
             <ArtifactCodeView

@@ -313,6 +313,39 @@ export type DesktopFetchResult = {
   body: string;
 };
 
+export type DesktopMultipartUploadInput = {
+  transferId: string;
+  url: string;
+  bytes: ArrayBuffer;
+  filename: string;
+  size: number;
+  contentType?: string;
+  fieldName?: string;
+  fields?: Record<string, string>;
+  method?: string;
+  headers?: Record<string, string>;
+  timeoutMs?: number;
+};
+
+export type DesktopBinaryDownloadInput = {
+  transferId: string;
+  url: string;
+  destinationPath: string;
+  maxBytes?: number;
+  method?: string;
+  headers?: Record<string, string>;
+  timeoutMs?: number;
+};
+
+export type DesktopBinaryDownloadResult = {
+  status: number;
+  statusText: string;
+  headers: [string, string][];
+  path: string | null;
+  bytes: number;
+  body?: string;
+};
+
 export type WorkspaceCreateInput = {
   folderPath: string;
   name?: string | null;
@@ -549,6 +582,9 @@ export type DesktopCommandMap = {
   __getApplicationsForFile: { args: [target: string]; result: { name: string; appPath: string; icon: string | null }[] };
   __openWithApp: { args: [target: string, appPath: string]; result: unknown };
   __fetch: { args: [url: string, init?: DesktopFetchInit]; result: DesktopFetchResult };
+  __uploadMultipart: { args: [input: DesktopMultipartUploadInput]; result: DesktopFetchResult };
+  __downloadBinary: { args: [input: DesktopBinaryDownloadInput]; result: DesktopBinaryDownloadResult };
+  __cancelTransfer: { args: [transferId: string]; result: boolean };
   __homeDir: { args: []; result: string };
   __joinPath: { args: [...segments: string[]]; result: string };
   __setZoomFactor: { args: [factor: number]; result: boolean };

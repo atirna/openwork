@@ -2,7 +2,7 @@
 set -euo pipefail
 
 # Start the Den server stack inside a Daytona sandbox.
-# Services: MySQL, Den API, Den Web, and worker proxy.
+# Services: MySQL, Den API, and Den Web.
 
 if [ -n "${OPENWORK_WORKSPACE_DIR:-}" ]; then
   REPO_DIR="$OPENWORK_WORKSPACE_DIR"
@@ -16,12 +16,10 @@ cd "$REPO_DIR"
 
 DEN_API_PORT="${DEN_API_PORT:-8788}"
 DEN_WEB_PORT="${DEN_WEB_PORT:-3005}"
-DEN_WORKER_PROXY_PORT="${DEN_WORKER_PROXY_PORT:-8789}"
 PNPM_STORE="${PNPM_STORE:-$REPO_DIR/.openwork-daytona/pnpm-store}"
 
 DEN_API_PUBLIC_URL="${DEN_API_PUBLIC_URL:-http://localhost:$DEN_API_PORT}"
 DEN_WEB_PUBLIC_URL="${DEN_WEB_PUBLIC_URL:-http://localhost:$DEN_WEB_PORT}"
-DEN_WORKER_PROXY_PUBLIC_URL="${DEN_WORKER_PROXY_PUBLIC_URL:-http://localhost:$DEN_WORKER_PROXY_PORT}"
 DEN_WEB_PUBLIC_HOST="${DEN_WEB_PUBLIC_URL#http://}"
 DEN_WEB_PUBLIC_HOST="${DEN_WEB_PUBLIC_HOST#https://}"
 DEN_WEB_PUBLIC_HOST="${DEN_WEB_PUBLIC_HOST%%/*}"
@@ -49,11 +47,9 @@ export DEN_AUTH_FALLBACK_BASE="${DEN_AUTH_FALLBACK_BASE:-http://127.0.0.1:$DEN_A
 export NEXT_PUBLIC_OPENWORK_AUTH_CALLBACK_URL="${NEXT_PUBLIC_OPENWORK_AUTH_CALLBACK_URL:-$DEN_WEB_PUBLIC_URL}"
 export DEN_PROVISIONER_MODE="${DEN_PROVISIONER_MODE:-stub}"
 export DEN_WORKER_URL_TEMPLATE="${DEN_WORKER_URL_TEMPLATE:-https://workers.local/{workerId}}"
-export DAYTONA_WORKER_PROXY_BASE_URL="${DAYTONA_WORKER_PROXY_BASE_URL:-$DEN_WORKER_PROXY_PUBLIC_URL}"
-export DEN_DAYTONA_WORKER_PROXY_BASE_URL="$DAYTONA_WORKER_PROXY_BASE_URL"
 export DEN_WEB_ALLOWED_DEV_ORIGINS="${DEN_WEB_ALLOWED_DEV_ORIGINS:-$DEN_WEB_PUBLIC_HOST}"
 
-DEFAULT_ORIGINS="$DEN_WEB_PUBLIC_URL,$DEN_API_PUBLIC_URL,$DEN_WORKER_PROXY_PUBLIC_URL,http://localhost:$DEN_WEB_PORT,http://127.0.0.1:$DEN_WEB_PORT,http://localhost:$DEN_API_PORT,http://127.0.0.1:$DEN_API_PORT,http://localhost:$DEN_WORKER_PROXY_PORT,http://127.0.0.1:$DEN_WORKER_PROXY_PORT"
+DEFAULT_ORIGINS="$DEN_WEB_PUBLIC_URL,$DEN_API_PUBLIC_URL,http://localhost:$DEN_WEB_PORT,http://127.0.0.1:$DEN_WEB_PORT,http://localhost:$DEN_API_PORT,http://127.0.0.1:$DEN_API_PORT"
 export CORS_ORIGINS="${CORS_ORIGINS:-$DEFAULT_ORIGINS}"
 
 # Daytona mints a fresh preview hostname on every preview-url call, so any
@@ -196,7 +192,6 @@ nohup env \
   DEN_BOOTSTRAP_ADMIN_EMAILS="${DEN_BOOTSTRAP_ADMIN_EMAILS:-}" \
   PROVISIONER_MODE="$DEN_PROVISIONER_MODE" \
   WORKER_URL_TEMPLATE="$DEN_WORKER_URL_TEMPLATE" \
-  DAYTONA_WORKER_PROXY_BASE_URL="$DAYTONA_WORKER_PROXY_BASE_URL" \
   DEN_ORG_MODE="$DEN_ORG_MODE" \
   DEN_PASSWORD_BREACH_SCREENING_ENABLED="$DEN_PASSWORD_BREACH_SCREENING_ENABLED" \
   DEN_GENERATED_ARTIFACT_VIEWS_ENABLED="$DEN_GENERATED_ARTIFACT_VIEWS_ENABLED" \
@@ -238,42 +233,6 @@ if [ "${RUN_SEED:-0}" = "1" ]; then
   fi
   echo "DEMO_OWNER_READY=$demo_email"
 fi
-
-echo "==> Starting worker proxy on :$DEN_WORKER_PROXY_PORT..."
-pkill -f "tsx watch src/server.ts" >/dev/null 2>&1 || true
-nohup env \
-  PORT="$DEN_WORKER_PROXY_PORT" \
-  DATABASE_URL="$DATABASE_URL" \
-  OPENWORK_DEV_MODE="$OPENWORK_DEV_MODE" \
-  DAYTONA_API_URL="${DAYTONA_API_URL:-}" \
-  DAYTONA_API_KEY="${DAYTONA_API_KEY:-}" \
-  DAYTONA_TARGET="${DAYTONA_TARGET:-}" \
-  DAYTONA_OPENWORK_PORT="${DAYTONA_OPENWORK_PORT:-8787}" \
-  DAYTONA_SIGNED_PREVIEW_EXPIRES_SECONDS="${DAYTONA_SIGNED_PREVIEW_EXPIRES_SECONDS:-86400}" \
-  pnpm --filter @openwork-ee/den-worker-proxy exec tsx watch src/server.ts > /tmp/den-worker-proxy.log 2>&1 &
-
-wait_for_http_status() {
-  local url="$1"
-  local label="$2"
-  local max_wait="${3:-120}"
-  local elapsed=0
-  local status=""
-
-  while [ "$elapsed" -lt "$max_wait" ]; do
-    status="$(curl -s -o /dev/null -w '%{http_code}' "$url" 2>/dev/null || true)"
-    if [ "$status" != "000" ]; then
-      echo "==> $label ready after ${elapsed}s (HTTP $status)"
-      return 0
-    fi
-    sleep 5
-    elapsed=$((elapsed + 5))
-  done
-
-  echo "ERROR: $label did not respond at $url" >&2
-  return 1
-}
-
-wait_for_http_status "http://127.0.0.1:$DEN_WORKER_PROXY_PORT/unknown" "worker proxy" 120
 
 den_web_marker=.openwork-daytona/den-web-build.tree
 den_web_key="$(build_key HEAD:packages/ui HEAD:ee/packages/utils HEAD:ee/apps/den-web)"
@@ -330,7 +289,6 @@ wait_for_http "http://127.0.0.1:$DEN_WEB_PORT/api/den/health" "Den Web" 180
 cat > .openwork-daytona/server-env <<EOF
 DEN_API_URL=$DEN_API_PUBLIC_URL
 DEN_WEB_URL=$DEN_WEB_PUBLIC_URL
-DEN_WORKER_PROXY_URL=$DEN_WORKER_PROXY_PUBLIC_URL
 BETTER_AUTH_URL=$BETTER_AUTH_URL
 DEN_MCP_RESOURCE_URL=$DEN_MCP_RESOURCE_URL
 DEN_PROVISIONER_MODE=$DEN_PROVISIONER_MODE
@@ -342,11 +300,9 @@ echo "  OpenWork Daytona server stack ready"
 echo ""
 echo "  Den Web:       $DEN_WEB_PUBLIC_URL"
 echo "  Den API:       $DEN_API_PUBLIC_URL"
-echo "  Worker Proxy:  $DEN_WORKER_PROXY_PUBLIC_URL"
 echo ""
 echo "  Logs:"
 echo "    /tmp/den-api.log"
 echo "    /tmp/den-web.log"
-echo "    /tmp/den-worker-proxy.log"
 echo "    /tmp/den-db-push.log"
 echo "============================================"

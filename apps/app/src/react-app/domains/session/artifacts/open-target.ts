@@ -105,7 +105,7 @@ function extname(value: string) {
 function classifyOpenTarget(value: string, kind: OpenTargetKind): OpenTargetPreview {
   if (kind === "url") return "browser";
   const ext = extname(value);
-  if ([".md", ".markdown", ".mdx"].includes(ext)) return "markdown";
+  if ([".md", ".markdown", ".mdx", ".mmd"].includes(ext)) return "markdown";
   if ([".csv", ".tsv", ".xlsx", ".xls", ".ods"].includes(ext)) return "sheet";
   if ([".ppt", ".pptx", ".pptm", ".pot", ".potx", ".odp", ".key", ".sxi"].includes(ext)) return "slides";
   if (ext === ".docx") return "document";

@@ -5,6 +5,7 @@ import {
   classifyAutomationExecutionError,
   createDesktopAutomationRunner,
   executeDesktopAutomation,
+  executeDesktopRemoteSession,
   normalizeRunnerBaseUrl,
   runnerTokenAudience,
 } from "./automation-runner.mjs"
@@ -138,6 +139,18 @@ function testAssignment() {
     timeoutMs: 30_000,
     leaseExpiresAt: Date.now() + 60_000,
     attempt: 1,
+  }
+}
+
+function remoteSessionAssignment(overrides = {}) {
+  return {
+    commandId: "command-1",
+    kind: "remote_session_create",
+    title: "Desktop handoff",
+    prompt: "Inspect the repo",
+    model: { providerId: "provider", modelId: "model", variant: "high" },
+    expiresAt: Date.now() + 60_000,
+    ...overrides,
   }
 }
 
@@ -770,6 +783,172 @@ test("waking a desktop that was never configured stays disconnected", () => {
   })
   assert.deepEqual(runner.wake(), { polled: false })
   runner.stop()
+})
+
+test("a remote-session work item creates a local session and completes with its real ids", async () => {
+  const tokenA = runnerTokenFor("https://den.example.com")
+  const tokenB = `${tokenA}-fresh`
+  const denRequests = []
+  const localRequests = []
+  let offered = false
+  let releaseCreate = () => {}
+  const createGate = new Promise((resolve) => { releaseCreate = () => resolve(undefined) })
+  let createStarted = false
+  let resolveCompleted
+  const completed = new Promise((resolve) => { resolveCompleted = resolve })
+  const runner = createDesktopAutomationRunner({
+    getLocalRuntime: async () => ({ baseUrl: "http://127.0.0.1:3000", token: "local-client-token" }),
+    fetchImpl: async (url, options = {}) => {
+      const parsed = new URL(url)
+      const body = options.body ? JSON.parse(options.body) : null
+      const authorization = new Headers(options.headers).get("Authorization")
+      if (parsed.origin === "http://127.0.0.1:3000") {
+        localRequests.push({ path: parsed.pathname, method: options.method ?? "GET", body, authorization })
+        if (parsed.pathname === "/workspaces") {
+          return Response.json({ items: [{ id: "workspace-1" }], activeId: "workspace-1" })
+        }
+        if (parsed.pathname === "/workspace/workspace-1/sessions" && options.method === "POST") {
+          createStarted = true
+          await createGate
+          return Response.json({ item: { id: "session-1" }, started: true }, { status: 201 })
+        }
+        throw new Error(`Unexpected local request ${parsed.pathname}`)
+      }
+      denRequests.push({ path: parsed.pathname, authorization, body })
+      if (parsed.pathname === "/v1/automation-runner/work") {
+        if (!offered && authorization === `Bearer ${tokenA}`) {
+          offered = true
+          return Response.json({ items: [{ kind: "remote_session_create", commandId: "command-1" }] })
+        }
+        return Response.json({ items: [] })
+      }
+      if (parsed.pathname === "/v1/remote-session-commands/command-1/claim") {
+        return Response.json({ assignment: remoteSessionAssignment() })
+      }
+      if (parsed.pathname === "/v1/remote-session-commands/command-1/complete") {
+        resolveCompleted()
+        return Response.json({ command: { id: "command-1", status: "delivered" } })
+      }
+      throw new Error(`Unexpected Den request ${parsed.pathname}`)
+    },
+    waitBeforeReconnect: () => new Promise(() => {}),
+  })
+
+  runner.configure({ baseUrl: "https://den.example.com", token: tokenA, runnerId: "runner-1" })
+  await waitFor(() => createStarted, "remote session create did not start")
+  assert.equal(runner.configure({ baseUrl: "https://den.example.com", token: tokenB, runnerId: "runner-1" }).connected, true)
+  await flushTasks()
+  assert.equal(denRequests.filter((request) => request.authorization === `Bearer ${tokenB}`).length, 0)
+
+  releaseCreate()
+  await withTimeout(completed, "remote session completion timed out")
+  await waitFor(
+    () => denRequests.some((request) => request.path === "/v1/automation-runner/work" && request.authorization === `Bearer ${tokenB}`),
+    "deferred runner credential did not connect",
+  )
+  runner.stop()
+
+  assert.deepEqual(localRequests, [
+    { path: "/workspaces", method: "GET", body: null, authorization: "Bearer local-client-token" },
+    {
+      path: "/workspace/workspace-1/sessions",
+      method: "POST",
+      body: {
+        title: "Desktop handoff",
+        prompt: "Inspect the repo",
+        providerId: "provider",
+        modelId: "model",
+        variant: "high",
+      },
+      authorization: "Bearer local-client-token",
+    },
+  ])
+  assert.equal(denRequests.some((request) => request.path.includes("/automation-runs/")), false)
+  assert.equal(denRequests.some((request) => request.path.endsWith("/heartbeat")), false)
+  assert.deepEqual(
+    denRequests.find((request) => request.path.endsWith("/complete"))?.body,
+    {
+      status: "delivered",
+      sessionId: "session-1",
+      workspaceId: "workspace-1",
+      resultSummary: "Remote session created",
+    },
+  )
+})
+
+test("remote-session creation omits nullable prompt and model fields", async () => {
+  const requests = []
+  const result = await executeDesktopRemoteSession(remoteSessionAssignment({ prompt: null, model: null }), {
+    getLocalRuntime: async () => ({ baseUrl: "http://127.0.0.1:3000", token: "local-client-token" }),
+    fetchImpl: async (url, options = {}) => {
+      const parsed = new URL(url)
+      requests.push({ path: parsed.pathname, body: options.body ? JSON.parse(options.body) : null })
+      if (parsed.pathname === "/workspaces") return Response.json({ items: [{ id: "workspace-first" }] })
+      if (parsed.pathname === "/workspace/workspace-first/sessions") {
+        return Response.json({ item: { id: "session-not-started" } }, { status: 201 })
+      }
+      throw new Error(`Unexpected request ${parsed.pathname}`)
+    },
+    signal: new AbortController().signal,
+  })
+
+  assert.deepEqual(result, { sessionId: "session-not-started", workspaceId: "workspace-first", started: false })
+  assert.deepEqual(requests, [
+    { path: "/workspaces", body: null },
+    { path: "/workspace/workspace-first/sessions", body: { title: "Desktop handoff" } },
+  ])
+})
+
+test("a local remote-session failure completes as failed without leaking the response body", async () => {
+  const sensitiveToken = "local-sensitive-token"
+  const completions = []
+  let offered = false
+  let resolveCompleted
+  const completed = new Promise((resolve) => { resolveCompleted = resolve })
+  const runner = createDesktopAutomationRunner({
+    getLocalRuntime: async () => ({ baseUrl: "http://127.0.0.1:3000", token: "local-client-token" }),
+    fetchImpl: async (url, options = {}) => {
+      const parsed = new URL(url)
+      if (parsed.origin === "http://127.0.0.1:3000") {
+        if (parsed.pathname === "/workspaces") {
+          return Response.json({ items: [{ id: "workspace-1" }], activeId: "workspace-1" })
+        }
+        if (parsed.pathname === "/workspace/workspace-1/sessions") {
+          return Response.json({ message: "x".repeat(2_500), token: sensitiveToken }, { status: 500 })
+        }
+      }
+      if (parsed.pathname === "/v1/automation-runner/work") {
+        if (offered) return Response.json({ items: [] })
+        offered = true
+        return Response.json({ items: [{ kind: "remote_session_create", commandId: "command-1" }] })
+      }
+      if (parsed.pathname.endsWith("/claim")) {
+        return Response.json({ assignment: remoteSessionAssignment({ prompt: null, model: null }) })
+      }
+      if (parsed.pathname.endsWith("/complete")) {
+        completions.push(JSON.parse(options.body))
+        resolveCompleted()
+        return Response.json({ command: { id: "command-1", status: "failed" } })
+      }
+      throw new Error(`Unexpected request ${parsed.pathname}`)
+    },
+    waitBeforeReconnect: () => new Promise(() => {}),
+  })
+  runner.configure({
+    baseUrl: "https://den.example.com",
+    token: runnerTokenFor("https://den.example.com"),
+    runnerId: "runner-1",
+  })
+  await withTimeout(completed, "failed remote session completion timed out")
+  runner.stop()
+
+  assert.equal(completions.length, 1)
+  assert.equal(completions[0].status, "failed")
+  assert.equal(completions[0].error.code, "execution_failed")
+  assert.equal(completions[0].error.message.length, 2_000)
+  assert.equal(completions[0].sessionId, undefined)
+  assert.equal(completions[0].workspaceId, undefined)
+  assert.equal(JSON.stringify(completions[0]).includes(sensitiveToken), false)
 })
 
 test("a work poll left hanging by a suspended machine times out and retries", async () => {

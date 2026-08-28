@@ -342,6 +342,7 @@ export class AutomationService {
       runnerId: registration.runnerId,
       protocolVersion: registration.protocolVersion,
       supportedExecutionTargets: registration.supportedExecutionTargets,
+      capabilities: registration.capabilities,
       appVersion: registration.appVersion,
       platform: registration.platform,
       concurrency: registration.concurrency,

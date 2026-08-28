@@ -41,9 +41,12 @@ test("desktop Automation runner retires rejected credentials without changing tr
   expect(unit.stdout).toContain("failed desktop assignments retain their created local thread in the Den completion");
   expect(unit.stdout).toContain("cancellation during execution preserves the local thread and reaches a terminal completion");
   expect(unit.stdout).toContain("an explicit assistant provider failure terminates immediately with its local thread");
+  expect(unit.stdout).toContain("a remote-session work item creates a local session and completes with its real ids");
+  expect(unit.stdout).toContain("remote-session creation omits nullable prompt and model fields");
+  expect(unit.stdout).toContain("a local remote-session failure completes as failed without leaking the response body");
   expect(unit.stdout).not.toContain("not ok");
-  expect(unit.stdout).toMatch(/# tests 30\b/);
-  expect(unit.stdout).toMatch(/# pass 30\b/);
+  expect(unit.stdout).toMatch(/# tests 33\b/);
+  expect(unit.stdout).toMatch(/# pass 33\b/);
   expect(unit.stdout).toMatch(/# fail 0\b/);
   expect(unit.stdout).toMatch(/# skipped 0\b/);
   expect(unit.stdout).toMatch(/# todo 0\b/);
@@ -65,7 +68,7 @@ test("desktop Automation runner retires rejected credentials without changing tr
   expect(bridgeOutput).toContain("0 fail");
   evidence.recordAssertionEvidence(
     "Rejected runner credentials stop and remint without disrupting valid work",
-    "The runner and bridge suites passed 42 tests covering one-shot 401/403 retirement on every runner route, fresh-token remint backoff, generation races, active assignments, in-flight claims, wake-time work polling, bounded idle polls, cancellation, provider and workspace failures, durable failed-thread linkage, tool-only completion, and work-only polling.",
+    "The runner and bridge suites passed 45 tests covering one-shot 401/403 retirement on every runner route, fresh-token remint backoff, generation races, active assignments, in-flight claims, wake-time work polling, bounded idle polls, cancellation, provider and workspace failures, durable failed-thread linkage, tool-only completion, remote-session delivery and failure receipts, and work-only polling.",
     true,
   );
 
