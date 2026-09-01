@@ -132,7 +132,6 @@ async function runDbPush(databaseUrl: string): Promise<void> {
     const commands = process.env.OPENWORK_EVAL_DEN_RUNTIME_PREPARED === "1"
       ? [
           ["--filter", "@openwork-ee/den-db", "exec", "node", "--import", "tsx", "./node_modules/drizzle-kit/bin.cjs", "push", "--config", "drizzle.config.ts"],
-          ["--filter", "@openwork-ee/den-db", "exec", "node", "--import", "tsx", "scripts/ensure-fulltext-indexes.ts"],
           ["--filter", "@openwork-ee/den-db", "exec", "node", "--import", "tsx", "scripts/ensure-schema-repairs.ts"],
         ]
       : [["--filter", "@openwork-ee/den-db", "db:push"]];

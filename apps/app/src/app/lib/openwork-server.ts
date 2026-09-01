@@ -286,29 +286,9 @@ export type OpenworkAuthorizedFoldersUpdateResponse = {
   updatedAt: number;
 };
 
-export type OpenworkRuntimeConfigMigrationResult = {
-  migrated: boolean;
-  keys: string[];
-  legacyKeys: string[];
-  userOpencodeKeys: string[];
-  updatedAt: number | null;
-  legacyError?: string | null;
-};
-
 export type OpenworkRuntimeDisabledProvidersResult = {
   ok: true;
   disabledProviders: string[];
-};
-
-export type OpenworkLegacyConfigSweepState = {
-  version: 1;
-  sweptAt: string;
-  files: Array<{
-    path: string;
-    removedKeys: string[];
-    backupPath: string | null;
-  }>;
-  error?: string;
 };
 
 export type OpenworkRuntimeConfigStatus = {
@@ -318,23 +298,16 @@ export type OpenworkRuntimeConfigStatus = {
   managedFilePath: string;
   managedFileRebuiltAt: number | null;
   managedFileContentRedacted: string | null;
-  sweep: OpenworkLegacyConfigSweepState | null;
   sources?: {
     projectOpencode: { path: string; exists: boolean; keys: string[]; config: Record<string, unknown> };
     globalOpencode: { path: string; exists: boolean; keys: string[]; config: Record<string, unknown> };
     runtimeDatabase: { keys: string[]; config: Record<string, unknown> };
     injected: { keys: string[]; config: Record<string, unknown> };
   };
-  legacyOpenwork: {
-    path: string;
-    keys: string[];
-    error: string | null;
-  };
   userOpencode: {
     path: string;
     exists: boolean;
     keys: string[];
-    migratableKeys: string[];
   };
 };
 
@@ -789,39 +762,12 @@ export type OpenworkWorkspaceExport = {
   files?: Array<{ path: string; content: string }>;
 };
 
-export type OpenworkWorkspaceImportChange = {
-  kind: "opencode" | "openwork" | "skill" | "command" | "file";
-  action: "create" | "update" | "replace" | "delete" | "unchanged";
-  label: string;
-  path: string;
-};
-
-export type OpenworkWorkspaceImportPreview = {
-  fingerprint: string;
-  summary: {
-    total: number;
-    create: number;
-    update: number;
-    replace: number;
-    delete: number;
-    unchanged: number;
-  };
-  changes: OpenworkWorkspaceImportChange[];
-};
-
 export type OpenworkWorkspaceExportSensitiveMode = "auto" | "include" | "exclude";
 
 export type OpenworkWorkspaceExportWarning = {
   id: string;
   label: string;
   detail: string;
-};
-
-export type OpenworkBlueprintSessionsMaterializeResult = {
-  ok: boolean;
-  created: Array<{ templateId: string; sessionId: string; title: string }>;
-  existing: Array<{ templateId: string; sessionId: string }>;
-  openSessionId: string | null;
 };
 
 export type OpenworkArtifactItem = {
@@ -1530,7 +1476,6 @@ export function createOpenworkServerClient(options: { baseUrl: string; token?: s
     listWorkspaces: 8_000,
     activateWorkspace: 10_000,
     deleteWorkspace: 10_000,
-    deleteSession: 12_000,
     sessionRead: 12_000,
     status: 6_000,
     diagnostics: AGENT_CONTEXT_DIAGNOSTICS_REQUEST_TIMEOUT_MS,
@@ -1539,7 +1484,6 @@ export function createOpenworkServerClient(options: { baseUrl: string; token?: s
     cloudMcpProbeHealth: 30_000,
     cloudMcpReconcile: 60_000,
     workspaceExport: 30_000,
-    workspaceImport: 30_000,
     binary: 60_000,
   };
 
@@ -1636,28 +1580,6 @@ export function createOpenworkServerClient(options: { baseUrl: string; token?: s
         `/workspaces/${encodeURIComponent(workspaceId)}`,
         { token, hostToken, method: "DELETE", timeoutMs: timeouts.deleteWorkspace },
       ),
-    deleteSession: (workspaceId: string, sessionId: string) =>
-      requestJson<{ ok: boolean }>(
-        baseUrl,
-        `/workspace/${encodeURIComponent(workspaceId)}/sessions/${encodeURIComponent(sessionId)}`,
-        { token, hostToken, method: "DELETE", timeoutMs: timeouts.deleteSession },
-      ),
-    listSessions: (
-      workspaceId: string,
-      options?: { roots?: boolean; start?: number; search?: string; limit?: number },
-    ) => {
-      const query = new URLSearchParams();
-      if (typeof options?.roots === "boolean") query.set("roots", String(options.roots));
-      if (typeof options?.start === "number") query.set("start", String(options.start));
-      if (options?.search?.trim()) query.set("search", options.search.trim());
-      if (typeof options?.limit === "number") query.set("limit", String(options.limit));
-      const suffix = query.size ? `?${query.toString()}` : "";
-      return requestJson<{ items: Session[] }>(
-        baseUrl,
-        `/workspace/${encodeURIComponent(workspaceId)}/sessions${suffix}`,
-        { token, hostToken, timeoutMs: timeouts.sessionRead },
-      );
-    },
     getSessionGroups: (workspaceId: string) =>
       requestJson<{ state: OpenworkSessionGroupState; updatedAt: number | null }>(
         baseUrl,
@@ -1708,32 +1630,6 @@ export function createOpenworkServerClient(options: { baseUrl: string; token?: s
         { token, hostToken },
       );
     },
-    getSession: (workspaceId: string, sessionId: string) =>
-      requestJson<{ item: Session }>(
-        baseUrl,
-        `/workspace/${encodeURIComponent(workspaceId)}/sessions/${encodeURIComponent(sessionId)}`,
-        { token, hostToken, timeoutMs: timeouts.sessionRead },
-      ),
-    getSessionMessages: (workspaceId: string, sessionId: string, options?: { limit?: number }) => {
-      const query = new URLSearchParams();
-      if (typeof options?.limit === "number") query.set("limit", String(options.limit));
-      const suffix = query.size ? `?${query.toString()}` : "";
-      return requestJson<{ items: OpenworkSessionMessage[] }>(
-        baseUrl,
-        `/workspace/${encodeURIComponent(workspaceId)}/sessions/${encodeURIComponent(sessionId)}/messages${suffix}`,
-        { token, hostToken, timeoutMs: timeouts.sessionRead },
-      );
-    },
-    getSessionSnapshot: (workspaceId: string, sessionId: string, options?: { limit?: number }) => {
-      const query = new URLSearchParams();
-      if (typeof options?.limit === "number") query.set("limit", String(options.limit));
-      const suffix = query.size ? `?${query.toString()}` : "";
-      return requestJson<{ item: OpenworkSessionSnapshot }>(
-        baseUrl,
-        `/workspace/${encodeURIComponent(workspaceId)}/sessions/${encodeURIComponent(sessionId)}/snapshot${suffix}`,
-        { token, hostToken, timeoutMs: timeouts.sessionRead },
-      );
-    },
     exportWorkspace: (
       workspaceId: string,
       options?: { sensitiveMode?: OpenworkWorkspaceExportSensitiveMode },
@@ -1749,37 +1645,6 @@ export function createOpenworkServerClient(options: { baseUrl: string; token?: s
         timeoutMs: timeouts.workspaceExport,
       });
     },
-    importWorkspace: (workspaceId: string, payload: Record<string, unknown>) =>
-      requestJson<{ ok: boolean; preview?: OpenworkWorkspaceImportPreview }>(baseUrl, `/workspace/${encodeURIComponent(workspaceId)}/import`, {
-        token,
-        hostToken,
-        method: "POST",
-        body: payload,
-        timeoutMs: timeouts.workspaceImport,
-      }),
-    previewWorkspaceImport: (workspaceId: string, payload: Record<string, unknown>) =>
-      requestJson<OpenworkWorkspaceImportPreview>(
-        baseUrl,
-        `/workspace/${encodeURIComponent(workspaceId)}/import/preview`,
-        {
-          token,
-          hostToken,
-          method: "POST",
-          body: payload,
-          timeoutMs: timeouts.workspaceImport,
-        },
-      ),
-    materializeBlueprintSessions: (workspaceId: string) =>
-      requestJson<OpenworkBlueprintSessionsMaterializeResult>(
-        baseUrl,
-        `/workspace/${encodeURIComponent(workspaceId)}/blueprint/sessions/materialize`,
-        {
-          token,
-          hostToken,
-          method: "POST",
-          timeoutMs: timeouts.workspaceImport,
-        },
-      ),
     getConfig: (workspaceId: string) =>
       requestJson<{ opencode: Record<string, unknown>; openwork: Record<string, unknown>; updatedAt?: number | null }>(
         baseUrl,
@@ -1801,17 +1666,6 @@ export function createOpenworkServerClient(options: { baseUrl: string; token?: s
           hostToken,
           method: "PUT",
           body: { folders },
-          timeoutMs: timeouts.config,
-        },
-      ),
-    migrateRuntimeConfig: (workspaceId: string) =>
-      requestJson<OpenworkRuntimeConfigMigrationResult>(
-        baseUrl,
-        `/workspace/${encodeURIComponent(workspaceId)}/runtime-config/migrate`,
-        {
-          token,
-          hostToken,
-          method: "POST",
           timeoutMs: timeouts.config,
         },
       ),

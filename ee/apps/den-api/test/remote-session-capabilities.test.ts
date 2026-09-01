@@ -256,7 +256,7 @@ test("a missing session maps to unknown_session", async () => {
           code: "http_error",
           message: "not found",
           method: "GET",
-          path: "/sessions/ses_gone",
+          path: "/workspace/ws_1/opencode/session/ses_gone",
           status: 404,
         })
       },

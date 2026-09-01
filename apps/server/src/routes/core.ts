@@ -4,7 +4,6 @@ import type { createOpencodeClient } from "@opencode-ai/sdk/v2/client";
 import {
   type ConnectSnapshotOptions,
   getConnectSnapshot,
-  googleWorkspaceStatusConnectExtra,
   writeConnectState,
 } from "../connect-state.js";
 import type { CloudMcpLiveStatusObserver } from "../cloud-mcp-health.js";
@@ -13,14 +12,6 @@ import { readOpenWorkAutomationCatalog, renderOpenWorkAutomationInstruction } fr
 import { EnvStoreReadError, InvalidEnvKeyError, isValidEnvKey, type EnvService } from "../env-file.js";
 import { syncManagedProviderAuth } from "../managed-provider-auth.js";
 import { ApiError } from "../errors.js";
-import {
-  createGoogleWorkspaceConnectFlowManager,
-  googleWorkspaceDisconnect,
-  googleWorkspaceRunScopeSmokeTest,
-  googleWorkspaceSetActiveAccount,
-  googleWorkspaceStatus,
-  googleWorkspaceTestConnection,
-} from "../extensions/google-workspace.js";
 import { callExperimentalExtensionAction, listExperimentalExtensionActions } from "../extensions/index.js";
 import type { TokenService } from "../tokens.js";
 import type { Capabilities, ServerConfig, WorkspaceInfo } from "../types.js";
@@ -116,7 +107,6 @@ export function registerCoreRoutes(options: RegisterCoreRoutesOptions): void {
     createOpenAiRealtimeVoiceSession,
     managedProviderAuthLogger,
   } = options;
-  const googleWorkspaceConnectFlows = createGoogleWorkspaceConnectFlowManager(config);
   const envPendingChangesByRuntime = new Map<string, boolean>();
 
   const connectSnapshotBaseOptions = {
@@ -331,46 +321,6 @@ export function registerCoreRoutes(options: RegisterCoreRoutesOptions): void {
     }
     const body = await readJsonBody(ctx.request);
     return jsonResponse(await callExperimentalExtensionAction(config, env, body, await getConnectSnapshot(config, { ...connectSnapshotBaseOptions, ...connectSnapshotOptionsFromBody(body) })));
-  });
-
-  addRoute(routes, "GET", "/experimental/google-workspace/status", "client", async (ctx) => {
-    const connectSnapshot = await getConnectSnapshot(config, { ...connectSnapshotBaseOptions, ...connectSnapshotOptionsFromQuery(ctx.url) });
-    return jsonResponse(await googleWorkspaceStatus(config, googleWorkspaceStatusConnectExtra(connectSnapshot)));
-  });
-
-  addRoute(routes, "POST", "/experimental/google-workspace/connect/start", "client", async (ctx) => {
-    if (ctx.actor?.scope === "viewer") throw new ApiError(403, "forbidden", "Viewer tokens cannot connect Google Workspace");
-    const body = await readOptionalJsonBody(ctx.request);
-    const featuresValue = body.features;
-    const features = Array.isArray(featuresValue) ? featuresValue.filter((item): item is string => typeof item === "string") : [];
-    return jsonResponse(await googleWorkspaceConnectFlows.start({ gmailRead: body.gmailRead === true, features }), 201);
-  });
-
-  addRoute(routes, "GET", "/experimental/google-workspace/connect/status/:flowId", "client", async (ctx) => {
-    return jsonResponse(await googleWorkspaceConnectFlows.status(ctx.params.flowId));
-  });
-
-  addRoute(routes, "POST", "/experimental/google-workspace/disconnect", "client", async (ctx) => {
-    if (ctx.actor?.scope === "viewer") throw new ApiError(403, "forbidden", "Viewer tokens cannot disconnect Google Workspace");
-    const body = await readOptionalJsonBody(ctx.request);
-    const accountId = typeof body.accountId === "string" && body.accountId.trim() ? body.accountId.trim() : null;
-    return jsonResponse(await googleWorkspaceDisconnect(config, accountId));
-  });
-
-  addRoute(routes, "POST", "/experimental/google-workspace/active-account", "client", async (ctx) => {
-    if (ctx.actor?.scope === "viewer") throw new ApiError(403, "forbidden", "Viewer tokens cannot update Google Workspace settings");
-    const body = await readJsonBody(ctx.request);
-    const accountId = typeof body.accountId === "string" && body.accountId.trim() ? body.accountId.trim() : "";
-    if (!accountId) throw new ApiError(400, "invalid_payload", "accountId is required");
-    return jsonResponse(await googleWorkspaceSetActiveAccount(config, accountId));
-  });
-
-  addRoute(routes, "POST", "/experimental/google-workspace/test", "client", async () => {
-    return jsonResponse(await googleWorkspaceTestConnection(config));
-  });
-
-  addRoute(routes, "POST", "/experimental/google-workspace/smoke-test", "client", async () => {
-    return jsonResponse(await googleWorkspaceRunScopeSmokeTest(config));
   });
 
   addRoute(routes, "GET", "/workspaces", "client", async () => {

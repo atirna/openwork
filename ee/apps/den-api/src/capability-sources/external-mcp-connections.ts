@@ -1,4 +1,3 @@
-import { createHash } from "node:crypto"
 import { isDeepStrictEqual } from "node:util"
 import { and, desc, eq, inArray, isNull, or } from "@openwork-ee/den-db/drizzle"
 import {
@@ -21,8 +20,20 @@ import {
 } from "@openwork-ee/den-db/schema"
 import { createDenTypeId, type DenTypeId } from "@openwork-ee/utils/typeid"
 import { db } from "../db.js"
+import { env } from "../env.js"
 import { declaredPluginMcpAuthType, requiredPluginMcpAuthType } from "./external-mcp-auth-policy.js"
+import {
+  createExternalMcpIdentityBinding,
+  normalizeExternalMcpIdentityUrl,
+  type ExternalMcpOAuthStateIdentitySource,
+} from "./external-mcp-oauth-state-identity.js"
 import { normalizeConnectedAccountScopes, normalizeOAuthClientExtra } from "./oauth-credentials.js"
+
+export { normalizeExternalMcpIdentityUrl } from "./external-mcp-oauth-state-identity.js"
+
+export function externalMcpIdentityBinding(source: ExternalMcpOAuthStateIdentitySource): string {
+  return createExternalMcpIdentityBinding(source, env.betterAuthSecret)
+}
 
 /**
  * CRUD for ExternalMcpConnectionTable and its access grants — the "add any
@@ -98,31 +109,6 @@ function marketplaceMcpServerEntries(spec: Record<string, unknown>, fallbackName
     entries.push({ name: fallbackName, config: spec })
   }
   return entries
-}
-
-export function normalizeExternalMcpIdentityUrl(value: string): string {
-  try {
-    const url = new URL(value.trim())
-    url.hash = ""
-    const pathname = url.pathname.length > 1 ? url.pathname.replace(/\/+$/, "") : url.pathname
-    return `${url.protocol}//${url.host}${pathname}${url.search}`
-  } catch {
-    return value.trim().replace(/\/+$/, "")
-  }
-}
-
-/** A non-secret, one-way binding for OAuth state minted for this identity. */
-export function externalMcpIdentityBinding(
-  connection: Pick<ExternalMcpConnectionRow, "id" | "kind" | "url" | "authType" | "credentialMode">,
-): string {
-  return createHash("sha256")
-    .update(JSON.stringify([
-      ...(connection.kind === "native_provider" ? [connection.id] : []),
-      normalizeExternalMcpIdentityUrl(connection.url),
-      connection.authType,
-      connection.credentialMode,
-    ]))
-    .digest("base64url")
 }
 
 async function latestConfigObjectVersions(input: {
@@ -590,7 +576,7 @@ export type RepairExternalMcpOAuthIssuerResult =
  * verified the replacement through fresh protected-resource discovery.
  * Non-admin recovery may not invalidate another member's credentials.
  */
-export async function repairExternalMcpOAuthIssuer(input: {
+export async function repairExternalMcpIssuerConfiguration(input: {
   organizationId: OrganizationId
   connectionId: ExternalMcpConnectionId
   expectedIdentityBinding: string

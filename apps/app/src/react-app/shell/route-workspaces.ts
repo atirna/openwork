@@ -5,7 +5,9 @@
 
 import type { Session } from "@opencode-ai/sdk/v2/client";
 
+import { createClient, unwrap } from "@/app/lib/opencode";
 import type { OpenworkWorkspaceInfo } from "@/app/lib/openwork-server";
+import type { ResolvedWorkspaceEndpoint } from "@/app/lib/workspace-endpoint";
 import type { WorkspaceInfo } from "@/app/lib/desktop-types";
 import type { WorkspaceSessionGroup } from "@/app/types";
 import {
@@ -20,8 +22,7 @@ export type RouteWorkspace = OpenworkWorkspaceInfo & {
 };
 
 /**
- * Sessions as the routes handle them: SDK sessions from
- * openwork-server's listSessions, optionally enriched with run-status
+ * Sessions as the routes handle them: native SDK sessions, optionally enriched with run-status
  * fields that the sidebar probes defensively via getSessionStatus.
  */
 export type RouteSession = Session & {
@@ -30,6 +31,40 @@ export type RouteSession = Session & {
   runStatus?: unknown;
   slug?: string | null;
 };
+
+type RouteSessionListResult =
+  | { data: RouteSession[]; error?: undefined; request: Request; response: Response }
+  | { data?: undefined; error: unknown; request: Request; response: Response };
+type RouteSessionListTransport = (input: {
+  endpoint: ResolvedWorkspaceEndpoint;
+  limit: number;
+}) => Promise<RouteSessionListResult>;
+
+const nativeRouteSessionList: RouteSessionListTransport = async ({ endpoint, limit }) => {
+  const client = createClient(endpoint.opencodeBaseUrl, undefined, {
+    mode: "openwork",
+    token: endpoint.token,
+  });
+  return client.session.list({ limit });
+};
+
+export async function listRouteSessions(
+  endpoint: ResolvedWorkspaceEndpoint,
+  transport: RouteSessionListTransport = nativeRouteSessionList,
+): Promise<RouteSession[]> {
+  const result = await transport({ endpoint, limit: 200 });
+  try {
+    return unwrap(result);
+  } catch (error) {
+    if (error instanceof Error) {
+      Object.assign(error, { status: result.response.status });
+      if (result.error && typeof result.error === "object" && "code" in result.error && typeof result.error.code === "string") {
+        Object.assign(error, { code: result.error.code });
+      }
+    }
+    throw error;
+  }
+}
 
 export function mapDesktopWorkspace(workspace: WorkspaceInfo): RouteWorkspace {
   return {

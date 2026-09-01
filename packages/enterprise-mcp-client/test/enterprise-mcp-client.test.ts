@@ -295,8 +295,8 @@ async function startOAuthMcpServer(options: {
         return
       }
       sendJson(response, 404, { error: "not_found" })
-    } catch (error) {
-      sendJson(response, 500, { error: error instanceof Error ? error.message : String(error) })
+    } catch {
+      sendJson(response, 500, { error: "oauth_test_server_error" })
     }
   })
 
@@ -392,8 +392,8 @@ async function startProgressMcpServer(options: {
         clearInterval(progressTimer)
         clearTimeout(resultTimer)
       })
-    } catch (error) {
-      sendJson(response, 500, { error: error instanceof Error ? error.message : String(error) })
+    } catch {
+      sendJson(response, 500, { error: "progress_test_server_error" })
     }
   })
 

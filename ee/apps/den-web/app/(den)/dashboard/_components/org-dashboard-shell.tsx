@@ -414,8 +414,8 @@ export function OrgDashboardShell({ children }: { children: React.ReactNode }) {
   const mcpConnectionsEnabled = orgContext?.capabilities.mcpConnections === true;
   const orgManagedDashboardsEnabled = orgContext?.capabilities.orgManagedDashboards === true;
   const workflowsEnabled = orgContext?.capabilities.workflows === true;
-  // Web is a deployment offer rather than an organization rollout flag. Den API
-  // advertises it only when the operator explicitly enables OpenWork Web.
+  // Den API advertises the effective organization offer: either the deployment
+  // switch is on or a platform admin granted this organization complimentary access.
   const showWeb = runtimeConfigLoaded
     && orgContext?.capabilities.openworkWeb === true;
 

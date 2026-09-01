@@ -245,7 +245,7 @@ export type DenOrgCapabilities = {
   mcpConnections: boolean;
   /** Always on: Workflows/Code Mode shipped for every organization. Older servers may still return false. */
   workflows: boolean;
-  /** Deployment-wide Web offer; true only when Den explicitly enables OpenWork Web. */
+  /** Effective Web offer; true for the global switch or this organization's complimentary admin grant. */
   openworkWeb: boolean;
   cloud: boolean;
 };

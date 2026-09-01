@@ -357,12 +357,14 @@ export function BillingDashboardScreen() {
 
   const webSubscription = webBilling?.subscription ?? null;
   const webSubscribed = Boolean(webSubscription);
-  const webEligible = webBilling?.hasEligibleSubscription === true;
+  const webEligible = webBilling?.hasAccess === true;
+  const webAccessSource = webBilling?.accessSource ?? null;
+  const webComplimentary = webAccessSource === "complimentary";
   const webPrice = webBilling ? formatMoneyMinor(webBilling.unitAmount, webBilling.currency) : null;
   const webChargeMinor = webBilling?.expectedMonthlyTotal ?? 0;
   const webChargeLabel = webBilling ? formatMoneyMinor(webChargeMinor, webBilling.currency) : null;
   const webStatus = webSubscription?.status ?? null;
-  const webCountsTowardTotal = webSubscribed && webStatus !== "canceled" && webStatus !== "expired" && webStatus !== "incomplete_expired";
+  const webCountsTowardTotal = !webComplimentary && webSubscribed && webStatus !== "canceled" && webStatus !== "expired" && webStatus !== "incomplete_expired";
   const webPaymentStatus = webSubscription?.paymentStatus ?? null;
   const webPaymentFailed = webPaymentStatus === "past_due" || webPaymentStatus === "unpaid" || webPaymentStatus === "payment_failed";
   const webRenewsOn = formatBillingDate(webSubscription?.currentPeriodEnd ?? null);
@@ -383,7 +385,9 @@ export function BillingDashboardScreen() {
         icon={CreditCard}
         title="Billing"
         description={webFeatureEnabled
-          ? "OpenWork Web, team seats, and built-in AI model access are separate purchases. Your expected monthly total reflects the subscriptions shown below."
+          ? webComplimentary
+            ? "OpenWork Web is included for this organization at no charge. Team seats and built-in AI model access remain separate purchases."
+            : "OpenWork Web, team seats, and built-in AI model access are separate purchases. Your expected monthly total reflects the subscriptions shown below."
           : "Team seats and built-in AI model access are separate purchases. Your expected monthly total reflects the subscriptions shown below."}
         colors={["#F5F3FF", "#312E81", "#635BFF", "#C4B5FD"]}
       >
@@ -448,7 +452,9 @@ export function BillingDashboardScreen() {
           className="p-6 pb-4"
           title="Your subscriptions"
           description={webFeatureEnabled
-            ? "Each plan is billed separately. OpenWork Web is $50 per joined organization member each month."
+            ? webComplimentary
+              ? "OpenWork Web is included without a Stripe subscription or per-member charge."
+              : "Each plan is billed separately. OpenWork Web is $50 per joined organization member each month."
             : "Each plan is billed separately."}
           action={
             <DenButton variant="secondary" size="sm" icon={RefreshCw} loading={stripeBusy} onClick={() => void refreshStripeBilling(false)}>
@@ -491,16 +497,20 @@ export function BillingDashboardScreen() {
               description={
                 !webBilling
                   ? "Billing details are unavailable · browser access remains locked"
+                  : webComplimentary
+                    ? `${getOpenWorkWebQuantityDescription(webBilling.quantity)} covered · complimentary access`
                   : !webConfigured
                     ? "This deployment does not sell OpenWork Web access"
                     : webSubscribed
                       ? `${getOpenWorkWebQuantityDescription(webBilling.quantity)} × ${webPrice} · ${formatSubscriptionStatus(webStatus ?? "unknown")}`
                       : `${getOpenWorkWebQuantityDescription(webBilling.quantity)} · not subscribed`
               }
-              value={webCountsTowardTotal ? webChargeLabel ?? "" : formatMoneyMinor(0, webBilling?.currency ?? "usd")}
-              valueCaption={`per ${webBilling?.interval ?? "month"}`}
+              value={webComplimentary ? formatMoneyMinor(0, webBilling?.currency ?? "usd") : webCountsTowardTotal ? webChargeLabel ?? "" : formatMoneyMinor(0, webBilling?.currency ?? "usd")}
+              valueCaption={webComplimentary ? "no charge" : `per ${webBilling?.interval ?? "month"}`}
               badge={
-                !webBilling || !webConfigured
+                webComplimentary
+                  ? <DenBadge tone="success" icon={Check}>Complimentary</DenBadge>
+                  : !webBilling || !webConfigured
                   ? <DenBadge tone="neutral">Not billed</DenBadge>
                   : webPaymentFailed
                     ? <DenBadge tone="warning">Payment failed</DenBadge>
@@ -551,9 +561,13 @@ export function BillingDashboardScreen() {
         <DenCard className="mb-6" data-testid="billing-openwork-web-card">
           <DenSectionHeader
             title="OpenWork Web"
-            description="Browser access for your organization — $50 per joined member each month."
+            description={webComplimentary
+              ? "Browser access is included for every joined organization member at no charge."
+              : "Browser access for your organization — $50 per joined member each month."}
             action={
-              !webBilling || !webConfigured
+              webComplimentary
+                ? <DenBadge tone="success" icon={Check}>Complimentary</DenBadge>
+                : !webBilling || !webConfigured
                 ? <DenBadge tone="neutral">Not billed</DenBadge>
                 : webPaymentFailed
                   ? <DenBadge tone="warning">Payment failed</DenBadge>
@@ -576,9 +590,11 @@ export function BillingDashboardScreen() {
             <>
               <DenNotice
                 className="mt-5"
-                tone={!webConfigured ? "neutral" : webPaymentFailed ? "error" : webEligible ? "info" : "warning"}
+                tone={webComplimentary ? "info" : !webConfigured ? "neutral" : webPaymentFailed ? "error" : webEligible ? "info" : "warning"}
                 message={
-                  !webConfigured
+                  webComplimentary
+                    ? "OpenWork Web is included for this organization without a Stripe subscription or per-member charge."
+                    : !webConfigured
                     ? "OpenWork Web billing is not configured for this deployment."
                     : webPaymentFailed
                       ? webPaymentStatus === "payment_failed"
@@ -595,34 +611,40 @@ export function BillingDashboardScreen() {
               />
 
               <p className="mt-5 text-[14px] leading-6 text-gray-600" data-testid="billing-openwork-web-quantity-definition">
-                {OPENWORK_WEB_QUANTITY_EXPLANATION}
+                {webComplimentary
+                  ? "Every joined organization member is covered, including the owner. Pending invitations are not counted until they join."
+                  : OPENWORK_WEB_QUANTITY_EXPLANATION}
               </p>
               <div className="mt-4 rounded-2xl border border-gray-200 bg-gray-50 p-4" data-testid="billing-openwork-web-price-breakdown">
                 <p className="text-[22px] font-semibold tracking-[-0.03em] text-gray-950">
-                  {getOpenWorkWebQuantityDescription(webBilling.quantity)} × {webPrice}
+                  {webComplimentary
+                    ? `${getOpenWorkWebQuantityDescription(webBilling.quantity)} covered`
+                    : `${getOpenWorkWebQuantityDescription(webBilling.quantity)} × ${webPrice}`}
                 </p>
                 <p className="mt-1 text-[14px] text-gray-600">
-                  {webChargeLabel} per {webBilling.interval}
+                  {webComplimentary ? "$0.00 monthly charge" : `${webChargeLabel} per ${webBilling.interval}`}
                 </p>
               </div>
 
               <div className="mt-5 grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-4">
                 <BillingStat label="Plan" value="OpenWork Web" />
-                <BillingStat label="Unit price" value={`${webPrice ?? "—"} / member / month`} />
-                <BillingStat label="Members billed" value={String(webBilling.quantity)} />
-                <BillingStat label="Expected monthly total" value={webChargeLabel ?? "—"} />
+                <BillingStat label={webComplimentary ? "Access" : "Unit price"} value={webComplimentary ? "Complimentary" : `${webPrice ?? "—"} / member / month`} />
+                <BillingStat label={webComplimentary ? "Members covered" : "Members billed"} value={String(webBilling.quantity)} />
+                <BillingStat label="Expected monthly total" value={webComplimentary ? "$0.00" : webChargeLabel ?? "—"} />
               </div>
 
-              <div className="mt-4 grid grid-cols-1 gap-4 sm:grid-cols-3" data-testid="billing-openwork-web-lifecycle">
-                <BillingStat label="Subscription status" value={webStatus ? formatSubscriptionStatus(webStatus) : "Not subscribed"} />
-                <BillingStat label="Payment status" value={webPaymentStatus ? formatSubscriptionStatus(webPaymentStatus) : "Not available"} />
-                <BillingStat
-                  label={webCancelling ? "Access ends" : "Next renewal"}
-                  value={webRenewsOn ?? "Not available"}
-                />
-              </div>
+              {!webComplimentary ? (
+                <div className="mt-4 grid grid-cols-1 gap-4 sm:grid-cols-3" data-testid="billing-openwork-web-lifecycle">
+                  <BillingStat label="Subscription status" value={webStatus ? formatSubscriptionStatus(webStatus) : "Not subscribed"} />
+                  <BillingStat label="Payment status" value={webPaymentStatus ? formatSubscriptionStatus(webPaymentStatus) : "Not available"} />
+                  <BillingStat
+                    label={webCancelling ? "Access ends" : "Next renewal"}
+                    value={webRenewsOn ?? "Not available"}
+                  />
+                </div>
+              ) : null}
 
-              {!webQuantityCurrent ? (
+              {!webComplimentary && !webQuantityCurrent ? (
                 <DenNotice
                   className="mt-5"
                   tone="info"
@@ -632,10 +654,12 @@ export function BillingDashboardScreen() {
 
               <DenActionList className="mt-5">
                 <DenActionRow
-                  description="Add or remove members to change what your organization is billed. Pending invitations are never billed."
+                  description={webComplimentary
+                    ? "Every joined member is covered without a per-member charge. Manage membership without changing this grant."
+                    : "Add or remove members to change what your organization is billed. Pending invitations are never billed."}
                   action={<DenButton variant="secondary" onClick={goToMembers}>Manage members</DenButton>}
                 />
-                {webSubscribed ? (
+                {webComplimentary ? null : webSubscribed ? (
                   <DenActionRow
                     description={
                       webCancelling

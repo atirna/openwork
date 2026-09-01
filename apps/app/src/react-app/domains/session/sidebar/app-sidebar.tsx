@@ -1446,12 +1446,12 @@ function WorkspaceReorderItem({
   );
 }
 
-type WorkspaceHeaderProps = React.ComponentProps<typeof SidebarMenuButton> & {
+type WorkspaceHeaderProps = {
   workspace: WorkspaceInfo;
   statusLabel: string;
   isError: boolean;
   isLoading: boolean;
-  onTitlePointerDown: React.PointerEventHandler<HTMLDivElement>;
+  onTitlePointerDown: React.PointerEventHandler<HTMLButtonElement>;
 };
 
 function WorkspaceHeader({
@@ -1460,8 +1460,6 @@ function WorkspaceHeader({
   isError,
   isLoading,
   onTitlePointerDown,
-  onClick,
-  ...props
 }: WorkspaceHeaderProps) {
   const ctx = useSidebarContext();
   const label = workspaceLabel(workspace);
@@ -1472,15 +1470,11 @@ function WorkspaceHeader({
 
   return (
     <SidebarMenuButton
-      {...props}
+      render={<div />}
       className={cn(
         "gap-2 group-hover/workspace-header:bg-sidebar-accent group-hover/workspace-header:text-sidebar-accent-foreground mac:group-hover/workspace-header:bg-black/5 dark:mac:group-hover/workspace-header:bg-white/10",
         statusLabel && "h-10",
       )}
-      onClick={(event) => {
-        onClick?.(event);
-        handleSelectWorkspace();
-      }}
     >
       <SidebarGlyphSlot>
         {isLoading ? (
@@ -1489,10 +1483,12 @@ function WorkspaceHeader({
           <WorkspaceAvatarPicker workspaceId={workspace.id} label={label} />
         )}
       </SidebarGlyphSlot>
-      <div
+      <button
+        type="button"
         data-sidebar-workspace-drag-handle
-        className="min-w-0 flex-1 cursor-grab touch-none active:cursor-grabbing pr-8 group-hover/workspace-header:pr-20 group-has-[[data-workspace-actions]:focus-within]/workspace-header:pr-20 group-has-data-popup-open/workspace-header:pr-20"
+        className="min-w-0 flex h-full flex-1 cursor-grab touch-none flex-col items-start justify-center border-0 bg-transparent p-0 text-left text-inherit active:cursor-grabbing pr-8 group-hover/workspace-header:pr-20 group-has-[[data-workspace-actions]:focus-within]/workspace-header:pr-20 group-has-data-popup-open/workspace-header:pr-20"
         onPointerDown={onTitlePointerDown}
+        onClick={handleSelectWorkspace}
       >
         <span className="block ow-fade-truncate">{label}</span>
         {statusLabel ? (
@@ -1500,7 +1496,7 @@ function WorkspaceHeader({
             {statusLabel}
           </span>
         ) : null}
-      </div>
+      </button>
     </SidebarMenuButton>
   );
 }
@@ -1510,7 +1506,7 @@ type WorkspaceSidebarGroupProps = {
   group: WorkspaceSessionGroup;
   previewCount: number;
   showMoreSessions: (workspaceId: string, totalRoots: number) => void;
-  onWorkspaceTitlePointerDown: React.PointerEventHandler<HTMLDivElement>;
+  onWorkspaceTitlePointerDown: React.PointerEventHandler<HTMLButtonElement>;
 };
 
 function WorkspaceSidebarGroup({

@@ -15,11 +15,11 @@ import { db } from "../../db.js"
 import { checkEntitlement, getOrganizationEntitlements, parseOrganizationPlan } from "../../entitlements.js"
 import { env } from "../../env.js"
 import { findEnterpriseAuthRequirementForEmailDomain, resolveNonSsoSignInMethodForEmail } from "../../enterprise-auth-requirement.js"
-import { authenticatedRoute, jsonValidator, orgMemberRoute, orgRoleRoute, publicRoute, queryValidator, resolveMemberTeamsMiddleware } from "../../middleware/index.js"
+import { jsonValidator, orgMemberRoute, orgRoleRoute, publicRoute, queryValidator, resolveMemberTeamsMiddleware, userSessionRoute } from "../../middleware/index.js"
 import { denTypeIdSchema, enterprisePlanRequiredSchema, forbiddenSchema, invalidRequestSchema, jsonResponse, notFoundSchema, unauthorizedSchema } from "../../openapi.js"
 import { validateInvitationAcceptVerification } from "../../organization-join-verification.js"
 import { normalizeOrganizationMetadata } from "../../organization-limits.js"
-import { isOpenWorkWebAvailable } from "../../openwork-web-availability.js"
+import { isOpenWorkWebAvailableForOrganization } from "../../openwork-web-availability.js"
 import {
   acceptInvitationForUser,
   createOrganizationForUser,
@@ -294,16 +294,9 @@ export function registerOrgCoreRoutes<T extends { Variables: OrgRouteVariables }
         409: jsonResponse("Organization creation is disabled in single-org mode.", singleOrgModeSchema),
       },
     }),
-    authenticatedRoute(),
+    userSessionRoute(),
     jsonValidator(createOrganizationSchema),
     async (c) => {
-    if (c.get("apiKey")) {
-      return c.json({
-        error: "forbidden",
-        message: "API keys cannot create organizations.",
-      }, 403)
-    }
-
     if (env.orgMode === "single_org") {
       return c.json({
         error: "single_org_mode",
@@ -373,16 +366,9 @@ export function registerOrgCoreRoutes<T extends { Variables: OrgRouteVariables }
         404: jsonResponse("The invitation could not be found.", notFoundSchema),
       },
     }),
-    authenticatedRoute(),
+    userSessionRoute(),
     jsonValidator(acceptInvitationSchema),
     async (c) => {
-    if (c.get("apiKey")) {
-      return c.json({
-        error: "forbidden",
-        message: "API keys cannot accept organization invitations.",
-      }, 403)
-    }
-
     const user = c.get("user")
     const input = c.req.valid("json")
     const email = getRequiredUserEmail(user)
@@ -724,11 +710,10 @@ export function registerOrgCoreRoutes<T extends { Variables: OrgRouteVariables }
           installLinks: organizationInstallLinksEnabled(payload.organization.metadata, {
             gatingEnabled: env.installLinksGatingEnabled,
           }),
-          // Deployment capability: OpenWork Web is generally available to all
-          // organizations only when a hosted-style multi-org Den has the
-          // dedicated Stripe Web product configured. This is never read from
-          // mutable organization metadata.
-          openworkWeb: isOpenWorkWebAvailable(),
+          // Effective offer: the deployment switch enables Web generally,
+          // while the platform-admin complimentary grant enables only this
+          // organization when the deployment switch is off.
+          openworkWeb: isOpenWorkWebAvailableForOrganization(payload.organization.metadata),
           ...(cloudEnabled ? { cloud: true } : {}),
         },
         authMethods: {

@@ -173,13 +173,16 @@ export interface HeadlessThreadTranscript {
   terminalError: HeadlessThreadMessageError | null;
 }
 
-export interface HeadlessThreadClient {
+export interface AgentSessionClient {
   createThread(input: CreateThreadInput): Promise<HeadlessThread>;
   sendTurn(threadId: string, input: HeadlessThreadTurnInput): Promise<HeadlessTurnAcceptance>;
+  getThreadSnapshot(threadId: string, input?: { signal?: AbortSignal; limit?: number }): Promise<HeadlessThreadSnapshot>;
+  abortThread(threadId: string, input?: { signal?: AbortSignal }): Promise<HeadlessAbortResult>;
+}
+
+export interface HeadlessThreadClient extends AgentSessionClient {
   waitForThread(threadId: string, input: HeadlessThreadWaitInput): Promise<HeadlessThreadWaitResult>;
   waitUntilIdle(threadId: string, input: HeadlessThreadWaitInput): Promise<HeadlessThreadWaitResult>;
-  getThreadSnapshot(threadId: string, input?: { signal?: AbortSignal }): Promise<HeadlessThreadSnapshot>;
-  abortThread(threadId: string, input?: { signal?: AbortSignal }): Promise<HeadlessAbortResult>;
   exportTranscript(threadId: string, input?: { signal?: AbortSignal }): Promise<HeadlessThreadTranscript>;
 }
 
@@ -205,7 +208,7 @@ export interface HeadlessThreadClientOptions {
   defaultModel?: HeadlessThreadModel;
   /** Default `waitForThread` poll interval. Defaults to 500ms. */
   pollIntervalMs?: number;
-  /** Bounds every individual HTTP request. Defaults to 15 seconds. */
+  /** Bounds every individual HTTP request. Defaults to 15 seconds; use 0 to disable. */
   requestTimeoutMs?: number;
   /** Cancels every operation issued by this client. */
   signal?: AbortSignal;

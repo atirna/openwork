@@ -7,7 +7,7 @@ import { DEFAULT_OPENWORK_WEB_URL } from "../app/(den)/_lib/runtime-config";
 import {
   getWebPageAccessState,
   hasOngoingWebSubscription,
-  isExistingWebSubscriptionResponse,
+  isExistingWebAccessResponse,
   WebOpenButton,
   WebPurchaseButton,
 } from "../app/(den)/dashboard/web/page";
@@ -57,6 +57,9 @@ describe("Web dashboard page", () => {
     quantity: 3,
     expectedMonthlyTotal: 15000,
     hasEligibleSubscription: false,
+    hasAccess: false,
+    accessSource: null,
+    complimentaryAccess: false,
     subscription: null,
   };
 
@@ -72,7 +75,7 @@ describe("Web dashboard page", () => {
     confirming: false,
   };
 
-  test("uses the deployment Web offer and fails closed while billing resolves", () => {
+  test("uses Den's effective organization Web offer and fails closed while billing resolves", () => {
     expect(getWebPageAccessState({
       ...accessInput,
       webAvailable: false,
@@ -98,7 +101,12 @@ describe("Web dashboard page", () => {
     expect(getWebPageAccessState({ ...accessInput, confirming: true })).toBe("confirming");
     expect(getWebPageAccessState({
       ...accessInput,
-      billing: { ...webBilling, hasEligibleSubscription: true },
+      billing: { ...webBilling, hasEligibleSubscription: true, hasAccess: true, accessSource: "subscription" },
+    })).toBe("eligible");
+
+    expect(getWebPageAccessState({
+      ...accessInput,
+      billing: { ...webBilling, hasAccess: true, accessSource: "complimentary", complimentaryAccess: true },
     })).toBe("eligible");
   });
 
@@ -151,15 +159,19 @@ describe("Web dashboard page", () => {
   });
 
   test("recognizes the server duplicate guard so a checkout race refreshes billing", () => {
-    expect(isExistingWebSubscriptionResponse(
+    expect(isExistingWebAccessResponse(
       new Response(null, { status: 409 }),
       { error: "stripe_subscription_exists" },
     )).toBeTrue();
-    expect(isExistingWebSubscriptionResponse(
+    expect(isExistingWebAccessResponse(
+      new Response(null, { status: 409 }),
+      { error: "openwork_web_complimentary_access_exists" },
+    )).toBeTrue();
+    expect(isExistingWebAccessResponse(
       new Response(null, { status: 409 }),
       { error: "different_error" },
     )).toBeFalse();
-    expect(isExistingWebSubscriptionResponse(
+    expect(isExistingWebAccessResponse(
       new Response(null, { status: 500 }),
       { error: "stripe_subscription_exists" },
     )).toBeFalse();
@@ -175,11 +187,13 @@ describe("Web dashboard page", () => {
     expect(source).toContain("JSON.stringify({ type: OPENWORK_WEB_CHECKOUT_TYPE })");
     expect(source).toContain("JSON.stringify({ sessionId, type: OPENWORK_WEB_CHECKOUT_TYPE })");
     expect(source).toContain("headers: { [ORG_SCOPE_HEADER]: orgId }");
-    expect(source).toContain("nextBilling?.hasEligibleSubscription");
+    expect(source).toContain("nextBilling?.hasAccess");
     expect(source).toContain("OpenWork Web remains locked");
     expect(source).toContain("Ask a workspace owner or admin");
     expect(source).toContain("Access opens as soon as your payment is confirmed.");
     expect(source).toContain("pending invitations are never billed");
+    expect(source).toContain("Complimentary access");
+    expect(source).toContain("no Stripe subscription or per-member charge");
     expect(source).not.toContain("Stripe will show");
     expect(source).toContain("await requestWebBilling(orgId, false)");
     expect(source).not.toContain('runtimeConfig.orgMode === "multi_org"');

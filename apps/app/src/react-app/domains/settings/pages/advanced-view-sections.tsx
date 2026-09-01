@@ -1,6 +1,6 @@
 /** @jsxImportSource react */
 import { useState, type ComponentProps, type ReactNode } from "react";
-import { CircleAlert, Cpu, Database, Info, RefreshCcw, Server } from "lucide-react";
+import { CircleAlert, Cpu, Info, RefreshCcw, Server } from "lucide-react";
 
 import { Alert, AlertDescription } from "@/components/ui/alert";
 import { Badge } from "@/components/ui/badge";
@@ -483,16 +483,13 @@ export function AdvancedCloudMcpDiagnosticsSection(props: AdvancedCloudMcpDiagno
   );
 }
 
-interface AdvancedRuntimeMigrationSectionProps {
+interface AdvancedRuntimeConfigSourcesSectionProps {
   busy: boolean;
-  canMigrate: boolean;
-  migrationBusy: boolean;
-  migrationStatus: string | null;
+  canInspect: boolean;
   configStatus: OpenworkRuntimeConfigStatus | null;
   configStatusBusy: boolean;
   configStatusError: string | null;
   onRefresh: () => Promise<void>;
-  onMigrate: () => Promise<void>;
 }
 
 function formatKeys(keys: string[]) {
@@ -591,7 +588,7 @@ function RuntimeConfigSourceBlock(props: {
   );
 }
 
-export function AdvancedRuntimeMigrationSection(props: AdvancedRuntimeMigrationSectionProps) {
+export function AdvancedRuntimeConfigSourcesSection(props: AdvancedRuntimeConfigSourcesSectionProps) {
   const effectiveRuntimeConfig = props.configStatus
     ? sanitizedConfig(props.configStatus.effectiveRuntime ?? props.configStatus.runtime)
     : null;
@@ -607,9 +604,9 @@ export function AdvancedRuntimeMigrationSection(props: AdvancedRuntimeMigrationS
 
       <LayoutSectionItem>
         <LayoutSectionItemHeader>
-          <LayoutSectionItemTitle>Move OpenWork-managed config</LayoutSectionItemTitle>
+          <LayoutSectionItemTitle>Config source snapshot</LayoutSectionItemTitle>
           <LayoutSectionItemDescription>
-            Moves older OpenWork-owned runtime keys from `.opencode/openwork.json` and safe OpenWork-managed keys from `opencode.jsonc` into the runtime database.
+            Shows the OpenWork runtime database, the injected runtime config, and the workspace-owned OpenCode config files.
           </LayoutSectionItemDescription>
           <LayoutSectionItemHeaderActions>
             <Button
@@ -617,24 +614,13 @@ export function AdvancedRuntimeMigrationSection(props: AdvancedRuntimeMigrationS
               variant="outline"
               size="sm"
               onClick={() => void props.onRefresh()}
-              disabled={props.busy || props.configStatusBusy || !props.canMigrate}
+              disabled={props.busy || props.configStatusBusy || !props.canInspect}
             >
               <RefreshCcw size={14} className={props.configStatusBusy ? "animate-spin" : ""} />
               Refresh
             </Button>
-            <Button
-              type="button"
-              variant="outline"
-              size="sm"
-              onClick={() => void props.onMigrate()}
-              disabled={props.busy || props.migrationBusy || !props.canMigrate}
-            >
-              <Database size={14} />
-              {props.migrationBusy ? "Migrating..." : "Migrate"}
-            </Button>
           </LayoutSectionItemHeaderActions>
         </LayoutSectionItemHeader>
-        {props.migrationStatus ? <SettingsNotice>{props.migrationStatus}</SettingsNotice> : null}
         {props.configStatusError ? <SettingsNotice>{props.configStatusError}</SettingsNotice> : null}
         {props.configStatus ? (
           <div className="space-y-3 rounded-xl border border-gray-6 bg-gray-1/60 p-3 text-xs text-gray-10">
@@ -694,19 +680,10 @@ export function AdvancedRuntimeMigrationSection(props: AdvancedRuntimeMigrationS
               <div>Stored keys: {formatKeys(props.configStatus.runtimeKeys)}</div>
             </div>
             <div>
-              <div className="font-medium text-gray-12">Legacy OpenWork metadata</div>
-              <div className="break-all">{props.configStatus.legacyOpenwork.path}</div>
-              {props.configStatus.legacyOpenwork.error ? (
-                <div className="text-amber-11">{props.configStatus.legacyOpenwork.error}; fix this file before moving legacy config.</div>
-              ) : null}
-              <div>Migratable keys: {formatKeys(props.configStatus.legacyOpenwork.keys)}</div>
-            </div>
-            <div>
               <div className="font-medium text-gray-12">User opencode.jsonc</div>
               <div className="break-all">{props.configStatus.userOpencode.path}</div>
               <div>{props.configStatus.userOpencode.exists ? "Found" : "Not found"}</div>
               <div>User-owned keys: {formatKeys(props.configStatus.userOpencode.keys)}</div>
-              <div>Migratable keys: {formatKeys(props.configStatus.userOpencode.migratableKeys)}</div>
             </div>
             <div>
               <div className="font-medium text-gray-12">Runtime DB JSON</div>

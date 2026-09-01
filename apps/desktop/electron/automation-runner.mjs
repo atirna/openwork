@@ -1,3 +1,5 @@
+import { createHeadlessThreadClient } from "@openwork/headless-threads"
+
 const EMPTY_USAGE = { inputTokens: null, outputTokens: null, costMicros: null }
 const RUNNER_WORK_POLL_MS = 60_000
 
@@ -66,9 +68,19 @@ async function requestJson(fetchImpl, baseUrl, token, requestPath, options = {})
   return payload
 }
 
+function createWorkspaceSessionClient(local, workspaceId, fetchImpl) {
+  return createHeadlessThreadClient({
+    baseUrl: local.baseUrl,
+    workspaceId,
+    token: local.token,
+    fetch: fetchImpl,
+    requestTimeoutMs: 0,
+  })
+}
+
 function assistantResult(snapshot) {
   const assistants = Array.isArray(snapshot?.messages)
-    ? snapshot.messages.filter((message) => message?.info?.role === "assistant")
+    ? snapshot.messages.filter((message) => message?.role === "assistant")
     : []
   let resultSummary = null
   let inputTokens = 0
@@ -77,14 +89,14 @@ function assistantResult(snapshot) {
   let sawOutput = false
   let sawCompletedTool = false
   for (const message of assistants) {
-    const tokens = message?.info?.tokens
-    if (Number.isFinite(tokens?.input)) { inputTokens += Number(tokens.input); sawInput = true }
-    if (Number.isFinite(tokens?.output)) { outputTokens += Number(tokens.output); sawOutput = true }
+    const usage = message?.usage
+    if (Number.isFinite(usage?.inputTokens)) { inputTokens += Number(usage.inputTokens); sawInput = true }
+    if (Number.isFinite(usage?.outputTokens)) { outputTokens += Number(usage.outputTokens); sawOutput = true }
     for (const part of Array.isArray(message?.parts) ? message.parts : []) {
       if (part?.type === "text" && typeof part.text === "string" && part.text.trim()) {
         resultSummary = part.text.trim().slice(0, 20_000)
       }
-      if (part?.type === "tool" && (part?.toolStatus === "completed" || part?.state?.status === "completed")) {
+      if (part?.type === "tool" && part?.toolStatus === "completed") {
         sawCompletedTool = true
       }
     }
@@ -104,10 +116,34 @@ function assistantFailure(snapshot) {
   const messages = Array.isArray(snapshot?.messages) ? snapshot.messages : []
   for (let index = messages.length - 1; index >= 0; index -= 1) {
     const message = messages[index]
-    if (message?.info?.role !== "assistant" || !message.info.error) continue
-    return classifyAutomationExecutionError(message.info.error)
+    if (message?.role !== "assistant" || !message.error) continue
+    return classifyAutomationExecutionError(message.error)
   }
   return null
+}
+
+/**
+ * Picks the assignment's target workspace.
+ *
+ * A pinned workspace must exist locally: running the Automation in whatever
+ * workspace happens to be active would silently retarget it, which is the
+ * exact bug pinning exists to prevent. Unpinned (legacy) assignments keep the
+ * historical active-workspace fallback.
+ */
+export function resolveAssignmentWorkspace(listed, pinnedWorkspaceId) {
+  const workspaces = Array.isArray(listed?.items) ? listed.items : []
+  if (pinnedWorkspaceId) {
+    const pinned = workspaces.find((item) => item?.id === pinnedWorkspaceId)
+    if (!pinned?.id) {
+      const error = new Error(`The Automation's pinned workspace is not available on this desktop`)
+      Object.defineProperty(error, "code", { value: "execution_runtime_unavailable" })
+      throw error
+    }
+    return pinned
+  }
+  const workspace = workspaces.find((item) => item?.id === listed?.activeId) ?? workspaces[0]
+  if (!workspace?.id) throw new Error("No local workspace is available")
+  return workspace
 }
 
 /** Runs the assignment as a normal visible local OpenWork thread. */
@@ -122,35 +158,39 @@ export async function executeDesktopAutomation(assignment, options) {
     { ...request, signal: options.signal },
   )
   const listed = await localRequest("/workspaces")
-  const workspaces = Array.isArray(listed?.items) ? listed.items : []
-  const workspace = workspaces.find((item) => item?.id === listed?.activeId) ?? workspaces[0]
-  if (!workspace?.id) throw new Error("No local workspace is available")
+  const workspace = resolveAssignmentWorkspace(listed, assignment.workspaceId ?? null)
   const workspaceId = String(workspace.id)
-  const created = await localRequest(`/workspace/${encodeURIComponent(workspaceId)}/sessions`, {
-    method: "POST",
-    body: {
-      title: `Automation: ${assignment.automationName}`.slice(0, 120),
-      prompt: assignment.instructions,
-      providerId: assignment.model.providerId,
-      modelId: assignment.model.modelId,
-      ...(assignment.model.variant ? { variant: assignment.model.variant } : {}),
-    },
+  const client = createWorkspaceSessionClient(local, workspaceId, options.fetchImpl ?? fetch)
+  const created = await client.createThread({
+    title: `Automation: ${assignment.automationName}`.slice(0, 120),
+    ...(assignment.instructions ? { prompt: assignment.instructions } : {}),
+    model: assignment.model,
+    signal: options.signal,
   })
-  const sessionId = typeof created?.item?.id === "string" ? created.item.id : null
-  if (!sessionId) throw new Error("The desktop runtime returned no thread")
-  const abort = () => void localRequest(
-    `/workspace/${encodeURIComponent(workspaceId)}/sessions/${encodeURIComponent(sessionId)}/abort`,
-    { method: "POST", body: {} },
-  ).catch(() => undefined)
+  const sessionId = created.id
+  // The assignment signal is already aborted when this listener runs. Do not
+  // pass it to the cleanup request or fetch can reject before reaching OpenCode.
+  const abort = () => void client.abortThread(sessionId).catch(() => undefined)
   options.signal.addEventListener("abort", abort, { once: true })
   try {
     const startedAt = Date.now()
+    const deadlineAt = startedAt + assignment.timeoutMs
     while (true) {
-      if (Date.now() - startedAt > assignment.timeoutMs) throw new Error("Desktop Automation execution timed out")
-      const response = await localRequest(
-        `/workspace/${encodeURIComponent(workspaceId)}/sessions/${encodeURIComponent(sessionId)}/snapshot?limit=200`,
-      )
-      const snapshot = response?.item
+      if (Date.now() > deadlineAt) throw new Error("Desktop Automation execution timed out")
+      // The wall-clock check above only runs between awaits. A machine that
+      // suspends mid-request can leave this socket half-open with no error,
+      // which would make the assignment timeout unreachable: bound each poll
+      // by the remaining execution budget so the deadline always fires.
+      let snapshot
+      try {
+        snapshot = await client.getThreadSnapshot(sessionId, {
+          signal: AbortSignal.any([options.signal, AbortSignal.timeout(Math.max(1, deadlineAt - Date.now()))]),
+          limit: 200,
+        })
+      } catch (error) {
+        if (!options.signal.aborted && Date.now() >= deadlineAt) throw new Error("Desktop Automation execution timed out")
+        throw error
+      }
       const output = assistantResult(snapshot)
       const snapshotError = assistantFailure(snapshot)
       if (snapshotError) {
@@ -201,23 +241,18 @@ export async function executeDesktopRemoteSession(assignment, options) {
   const workspace = workspaces.find((item) => item?.id === listed?.activeId) ?? workspaces[0]
   if (!workspace?.id) throw new Error("No local workspace is available")
   const workspaceId = String(workspace.id)
+  const client = createWorkspaceSessionClient(local, workspaceId, options.fetchImpl ?? fetch)
   let sessionId = null
   try {
-    const created = await localRequest(`/workspace/${encodeURIComponent(workspaceId)}/sessions`, {
-      method: "POST",
-      body: {
-        title: assignment.title,
-        ...(typeof assignment.prompt === "string" ? { prompt: assignment.prompt } : {}),
-        ...(assignment.model ? {
-          providerId: assignment.model.providerId,
-          modelId: assignment.model.modelId,
-          ...(assignment.model.variant ? { variant: assignment.model.variant } : {}),
-        } : {}),
-      },
+    const created = await client.createThread({
+      title: assignment.title,
+      ...(assignment.prompt ? { prompt: assignment.prompt } : {}),
+      ...(assignment.model ? { model: assignment.model } : {}),
+      signal: options.signal,
     })
-    sessionId = typeof created?.item?.id === "string" ? created.item.id : null
-    if (!sessionId) throw new Error("The desktop runtime returned no thread")
-    return { sessionId, workspaceId, started: Boolean(created.started) }
+    sessionId = created.id
+    const started = created.started
+    return { sessionId, workspaceId, started }
   } catch (error) {
     const contextualError = error instanceof Error ? error : new Error(serializedError(error))
     if (sessionId && Reflect.get(contextualError, "sessionId") === undefined) {
@@ -279,7 +314,10 @@ export function createDesktopAutomationRunner(options) {
   const random = options.random ?? Math.random
   const waitBeforeReconnect = options.waitBeforeReconnect ?? sleep
   const heartbeatIntervalMs = options.heartbeatIntervalMs ?? 10_000
+  const heartbeatTimeoutMs = options.heartbeatTimeoutMs ?? 8_000
+  const heartbeatMissLimit = options.heartbeatMissLimit ?? 3
   const workPollTimeoutMs = options.workPollTimeoutMs ?? 30_000
+  const lifecycleRequestTimeoutMs = options.lifecycleRequestTimeoutMs ?? 30_000
   const legacyBaseUrls = new Set((options.legacyBaseUrls ?? [])
     .map((value) => normalizeRunnerBaseUrl(value))
     .filter(Boolean))
@@ -348,13 +386,18 @@ export function createDesktopAutomationRunner(options) {
     }
   }
 
-  const heartbeat = async (state) => {
-    const active = state.active
-    if (!active || !isCurrent(state)) return
+  const heartbeat = async (state, active) => {
+    if (state.active !== active || !isCurrent(state)) return
     const response = await runnerRequest(
       state,
       `/v1/automation-runs/${encodeURIComponent(active.assignment.runId)}/heartbeat`,
-      { method: "POST", body: { attempt: active.assignment.attempt } },
+      {
+        method: "POST",
+        body: { attempt: active.assignment.attempt },
+        // Bounded below the interval so a hung probe settles before the next
+        // one is due instead of pinning the lease refresh on a dead socket.
+        signal: AbortSignal.timeout(heartbeatTimeoutMs),
+      },
     )
     if (state.active === active && (response.cancelRequested || response.leaseValid !== true)) {
       active.controller.abort(new Error("Automation run cancelled or lease lost"))
@@ -371,9 +414,37 @@ export function createDesktopAutomationRunner(options) {
     const event = (type, payload) => runnerRequest(
       state,
       `/v1/automation-runs/${encodeURIComponent(assignment.runId)}/events`,
-      { method: "POST", body: { attempt: assignment.attempt, sequence: ++sequence, type, payload, createdAt: Date.now() } },
+      {
+        method: "POST",
+        body: { attempt: assignment.attempt, sequence: ++sequence, type, payload, createdAt: Date.now() },
+        signal: AbortSignal.timeout(lifecycleRequestTimeoutMs),
+      },
     )
-    const heartbeatTimer = setInterval(() => void heartbeat(state).catch((error) => controller.abort(error)), heartbeatIntervalMs)
+    // Self-scheduling instead of setInterval: the next probe is armed only
+    // after the current one settles, so a slow heartbeat can never overlap
+    // the next tick. One transient failure must not kill a healthy run, so
+    // the run aborts only after consecutive misses outlast the lease.
+    let heartbeatTimer = null
+    let heartbeatStopped = false
+    let heartbeatMisses = 0
+    const heartbeatTick = async () => {
+      try {
+        await heartbeat(state, active)
+        heartbeatMisses = 0
+      } catch (error) {
+        heartbeatMisses += 1
+        if (heartbeatMisses >= heartbeatMissLimit) {
+          controller.abort(new Error(`Automation run heartbeat failed ${heartbeatMisses} times: ${serializedError(error)}`))
+          return
+        }
+        options.log?.(`runner heartbeat missed (${heartbeatMisses}/${heartbeatMissLimit}): ${serializedError(error)}`)
+      }
+      if (!heartbeatStopped && state.active === active && !controller.signal.aborted) scheduleHeartbeat()
+    }
+    const scheduleHeartbeat = () => {
+      heartbeatTimer = setTimeout(() => void heartbeatTick(), heartbeatIntervalMs)
+    }
+    scheduleHeartbeat()
     let result
     try {
       await event("user", { text: assignment.instructions, executionTarget: "desktop" })
@@ -407,14 +478,37 @@ export function createDesktopAutomationRunner(options) {
         },
       }
     } finally {
-      clearInterval(heartbeatTimer)
+      heartbeatStopped = true
+      clearTimeout(heartbeatTimer)
+    }
+    // Terminal delivery must terminate: reconcile (and with it the whole
+    // runner) waits on this step, so a hung or transiently failing request
+    // here would otherwise wedge the desktop until the app restarts. Each
+    // request gets its own deadline plus one retry, and a failed terminal
+    // event never skips the completion POST.
+    const deliver = async (label, send) => {
+      for (let attempt = 1; attempt <= 2; attempt += 1) {
+        try {
+          await send()
+          return
+        } catch (error) {
+          const retry = attempt === 1 && isCurrent(state)
+          options.log?.(`runner ${label} delivery failed${retry ? ", retrying" : ""}: ${serializedError(error)}`)
+          if (!retry) return
+        }
+      }
     }
     try {
-      await event("terminal", { status: result.status, executionTarget: "desktop", sessionId: result.sessionId })
-      await runnerRequest(state, `/v1/automation-runs/${encodeURIComponent(assignment.runId)}/complete`, {
+      await deliver("terminal event", () => event("terminal", {
+        status: result.status,
+        executionTarget: "desktop",
+        sessionId: result.sessionId,
+      }))
+      await deliver("completion", () => runnerRequest(state, `/v1/automation-runs/${encodeURIComponent(assignment.runId)}/complete`, {
         method: "POST",
         body: { ...result, attempt: assignment.attempt },
-      })
+        signal: AbortSignal.timeout(lifecycleRequestTimeoutMs),
+      }))
     } finally {
       if (state.active === active) state.active = null
       if (isCurrent(state) && pendingConfiguration) {
@@ -455,6 +549,7 @@ export function createDesktopAutomationRunner(options) {
       await runnerRequest(state, `/v1/remote-session-commands/${encodeURIComponent(assignment.commandId)}/complete`, {
         method: "POST",
         body: result,
+        signal: AbortSignal.timeout(lifecycleRequestTimeoutMs),
       })
     } finally {
       if (state.active === active) state.active = null
@@ -487,7 +582,7 @@ export function createDesktopAutomationRunner(options) {
             claimed = await runnerRequest(
               state,
               `/v1/remote-session-commands/${encodeURIComponent(item.commandId)}/claim`,
-              { method: "POST", body: {} },
+              { method: "POST", body: {}, signal: AbortSignal.timeout(lifecycleRequestTimeoutMs) },
             )
           } catch (error) {
             if (error?.status === 409) continue
@@ -503,7 +598,11 @@ export function createDesktopAutomationRunner(options) {
         state.claimInFlight = true
         let claimed
         try {
-          claimed = await runnerRequest(state, `/v1/automation-runs/${encodeURIComponent(item.runId)}/claim`, { method: "POST", body: {} })
+          claimed = await runnerRequest(state, `/v1/automation-runs/${encodeURIComponent(item.runId)}/claim`, {
+            method: "POST",
+            body: {},
+            signal: AbortSignal.timeout(lifecycleRequestTimeoutMs),
+          })
         } finally {
           state.claimInFlight = false
         }

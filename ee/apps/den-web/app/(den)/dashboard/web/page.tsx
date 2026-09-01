@@ -32,13 +32,13 @@ export function hasOngoingWebSubscription(billing: StripeWebBilling): boolean {
   );
 }
 
-export function isExistingWebSubscriptionResponse(response: Response, payload: unknown): boolean {
+export function isExistingWebAccessResponse(response: Response, payload: unknown): boolean {
   return response.status === 409
     && Boolean(
       payload
       && typeof payload === "object"
       && "error" in payload
-      && payload.error === "stripe_subscription_exists",
+      && (payload.error === "stripe_subscription_exists" || payload.error === "openwork_web_complimentary_access_exists"),
     );
 }
 
@@ -68,7 +68,7 @@ export function getWebPageAccessState({
   if (billingError) return "error";
   if (billingOrgId !== activeOrgId || !billing) return "loading";
   if (confirming) return "confirming";
-  return billing.hasEligibleSubscription ? "eligible" : "unsubscribed";
+  return billing.hasAccess ? "eligible" : "unsubscribed";
 }
 
 function CheckingWorkspaceAccess({ message = "Checking workspace access" }: { message?: string }) {
@@ -249,7 +249,7 @@ export default function WebPage() {
         attempts += 1;
         const nextBilling = await requestWebBilling(expectedOrgId, true);
         if (stopped || !mountedRef.current || currentOrgIdRef.current !== expectedOrgId) return;
-        if (nextBilling?.hasEligibleSubscription) {
+        if (nextBilling?.hasAccess) {
           setReturnChecking(false);
           setErrorRecord(null);
           clearStripeReturnParameters();
@@ -287,7 +287,7 @@ export default function WebPage() {
       setErrorRecord({ orgId, message: "OpenWork Web billing is not configured for this deployment." });
       return;
     }
-    if (billing.hasEligibleSubscription || hasOngoingWebSubscription(billing)) return;
+    if (billing.hasAccess || hasOngoingWebSubscription(billing)) return;
 
     checkoutStartingRef.current = true;
     setCheckoutBusy(true);
@@ -303,7 +303,7 @@ export default function WebPage() {
           },
           12000,
         );
-        if (isExistingWebSubscriptionResponse(response, payload)) {
+        if (isExistingWebAccessResponse(response, payload)) {
           await requestWebBilling(orgId, false);
           return;
         }
@@ -358,7 +358,7 @@ export default function WebPage() {
       description="Use OpenWork in your browser with an organization subscription."
       colors={["#EFF6FF", "#0F172A", "#2563EB", "#BAE6FD"]}
     >
-      <div data-testid="openwork-web-access" data-access-state={accessState}>
+      <div data-testid="openwork-web-access" data-access-state={accessState} data-access-source={billing?.accessSource ?? "none"}>
         {accessState === "error" ? (
           <DenCard size="spacious" data-testid="openwork-web-error">
             <p className="text-[18px] font-medium text-gray-950">OpenWork Web remains locked</p>
@@ -427,10 +427,14 @@ export default function WebPage() {
 
         {accessState === "eligible" && billing ? (
           <DenCard size="spacious" data-testid="openwork-web-eligible">
-            <p className="text-[12px] font-semibold uppercase tracking-[0.12em] text-emerald-700">Subscription active</p>
+            <p className="text-[12px] font-semibold uppercase tracking-[0.12em] text-emerald-700">
+              {billing.accessSource === "complimentary" ? "Complimentary access" : "Subscription active"}
+            </p>
             <h2 className="mt-2 text-[22px] font-semibold tracking-[-0.03em] text-gray-950">OpenWork Web is ready</h2>
             <p className="mt-3 text-[14px] leading-6 text-gray-600">
-              OpenWork Web is active for {getOpenWorkWebQuantityDescription(billing.quantity)} in this organization.
+              {billing.accessSource === "complimentary"
+                ? `OpenWork Web is included for all ${getOpenWorkWebQuantityDescription(billing.quantity)} in this organization, with no Stripe subscription or per-member charge.`
+                : `OpenWork Web is active for ${getOpenWorkWebQuantityDescription(billing.quantity)} in this organization.`}
             </p>
             <div className="mt-5 flex flex-wrap gap-3">
               <WebOpenButton openworkWebUrl={runtimeConfig.openworkWebUrl} />

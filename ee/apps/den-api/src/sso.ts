@@ -64,12 +64,16 @@ function authCallbackBaseUrl() {
   return env.apiPublicUrl ?? env.betterAuthUrl
 }
 
+// Better Auth builds the SAML SP metadata and AuthnRequest ACS location from
+// its own baseURL (the web origin), not from samlConfig.callbackUrl. The URLs
+// we display and store must match what the SP actually advertises to the IdP,
+// otherwise the IdP posts to the web origin and response validation rejects it.
 export function getSsoAcsUrl(providerId: string) {
-  return `${authCallbackBaseUrl()}/api/auth/sso/saml2/sp/acs/${encodeURIComponent(providerId)}`
+  return `${env.betterAuthUrl}/api/auth/sso/saml2/sp/acs/${encodeURIComponent(providerId)}`
 }
 
 export function getSsoMetadataUrl(providerId: string) {
-  return `${authCallbackBaseUrl()}/api/auth/sso/saml2/sp/metadata?providerId=${encodeURIComponent(providerId)}`
+  return `${env.betterAuthUrl}/api/auth/sso/saml2/sp/metadata?providerId=${encodeURIComponent(providerId)}`
 }
 
 export function getSsoOidcRedirectUrl(providerId: string) {

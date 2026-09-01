@@ -1001,11 +1001,11 @@ test.skipIf(!e2eTestsEnabled || !localPlacement || !mysqlOpen)(title, { timeout:
     if (!sessionId) return "missing active session id: " + location.hash;
     const messagesResponse = await fetch(
       "http://127.0.0.1:" + port + "/workspace/" + encodeURIComponent(workspaceId)
-        + "/sessions/" + encodeURIComponent(sessionId) + "/messages?limit=50",
+        + "/opencode/session/" + encodeURIComponent(sessionId) + "/message?limit=50",
       { headers },
     );
     const messagesPayload = await messagesResponse.json();
-    for (const message of Array.isArray(messagesPayload?.items) ? messagesPayload.items : []) {
+    for (const message of Array.isArray(messagesPayload) ? messagesPayload : []) {
       for (const part of Array.isArray(message?.parts) ? message.parts : []) {
         if (part && typeof part.tool === "string" && part.tool.endsWith("_execute_capability")) {
           return JSON.stringify({ tool: part.tool, state: part.state });

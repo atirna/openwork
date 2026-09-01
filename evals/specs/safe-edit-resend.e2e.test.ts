@@ -75,13 +75,20 @@ async function readEngineSnapshot(
   // Bound every runner-side fetch: the workspace passthrough can hold a
   // request open while the engine restarts, and an unbounded fetch would
   // consume undici's five-minute header timeout in one blocking call.
-  const response = await fetch(
-    `http://127.0.0.1:${credentials.port}/workspace/${encodeURIComponent(workspaceId)}/sessions/${encodeURIComponent(sessionId)}/snapshot`,
-    { headers: { Authorization: `Bearer ${credentials.token}` }, signal: AbortSignal.timeout(15_000) },
-  );
-  if (!response.ok) throw new Error(`Snapshot failed: ${response.status} ${(await response.text()).slice(0, 500)}`);
-  const payload: unknown = await response.json();
-  return parseEngineSnapshot(payload);
+  const base = `http://127.0.0.1:${credentials.port}/workspace/${encodeURIComponent(workspaceId)}/opencode/session`;
+  const encodedSessionId = encodeURIComponent(sessionId);
+  const options = { headers: { Authorization: `Bearer ${credentials.token}` }, signal: AbortSignal.timeout(15_000) };
+  const responses = await Promise.all([
+    fetch(`${base}/${encodedSessionId}`, options),
+    fetch(`${base}/${encodedSessionId}/message`, options),
+    fetch(`${base}/${encodedSessionId}/todo`, options),
+    fetch(`${base}/status`, options),
+  ]);
+  const failed = responses.find((response) => !response.ok);
+  if (failed) throw new Error(`Snapshot component failed: ${failed.status} ${(await failed.text()).slice(0, 500)}`);
+  const [session, messages, todos, statuses]: unknown[] = await Promise.all(responses.map((response) => response.json()));
+  const status = isRecord(statuses) && isRecord(statuses[sessionId]) ? statuses[sessionId] : { type: "idle" };
+  return parseEngineSnapshot({ item: { session, messages, todos, status } });
 }
 
 async function waitForEngineSnapshot(

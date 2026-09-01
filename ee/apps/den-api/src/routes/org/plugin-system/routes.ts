@@ -224,6 +224,7 @@ function actorContext(c: OrgContext): PluginArchActorContext {
   }
 
   return {
+    ...(c.get("apiKey") ? { apiKey: true } : {}),
     memberTeams: c.get("memberTeams") ?? [],
     organizationContext,
     session: c.get("session"),

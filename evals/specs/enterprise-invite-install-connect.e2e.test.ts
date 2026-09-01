@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { expect } from "vitest";
 import { denFetch, evalIn, signIn, waitFor } from "@openwork/behaviors";
-import { attachSurface, navigate } from "@openwork/cdp";
+import { attachSurface, callFunctionOnSurface, navigate } from "@openwork/cdp";
 import { screenshot, validate } from "@openwork/test-evidence";
 import { chrome, localHost } from "@openwork/hosts";
 import { startEgressLab } from "@openwork/labs";
@@ -37,7 +37,7 @@ const chainErrorPattern = /UNABLE_TO_VERIFY_LEAF_SIGNATURE|unable to verify the 
 // vitest process, so a sync spawn would deadlock the child's TLS handshake.
 async function fetchLabInChild(url: string, env: NodeJS.ProcessEnv): Promise<{ status: number | null; output: string }> {
   const script = `
-    fetch(${JSON.stringify(url)}).then(async (response) => {
+    fetch(process.argv[1]).then(async (response) => {
       console.log(JSON.stringify({ ok: response.ok, status: response.status }));
       process.exit(response.ok ? 0 : 1);
     }).catch((error) => {
@@ -45,7 +45,7 @@ async function fetchLabInChild(url: string, env: NodeJS.ProcessEnv): Promise<{ s
       process.exit(1);
     });
   `;
-  const child = spawn(process.execPath, ["--eval", script], { env });
+  const child = spawn(process.execPath, ["--eval", script, url], { env });
   const timer = setTimeout(() => child.kill("SIGKILL"), 15_000);
   let output = "";
   child.stdout.setEncoding("utf8");
@@ -196,7 +196,7 @@ test(title, { timeout: 1_800_000 }, async ({ evidence, place }) => {
   })()`);
   expect(authCaptureReady).toBe(true);
 
-  const submitted = await evalIn(browser, `(() => {
+  const submitted = await callFunctionOnSurface(browser, `function (nameValue, passwordValue) {
     const scope = document.querySelector('[data-testid="join-org-auth"]');
     if (!scope) return "no auth scope";
     const inputs = [...scope.querySelectorAll("input")];
@@ -204,20 +204,27 @@ test(title, { timeout: 1_800_000 }, async ({ evidence, place }) => {
     const password = inputs.find((input) => input.type === "password");
     if (!name || !password) return "missing fields";
     const setValue = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value").set;
-    setValue.call(name, ${JSON.stringify(invitee.name)});
+    setValue.call(name, nameValue);
     name.dispatchEvent(new Event("input", { bubbles: true }));
-    setValue.call(password, ${JSON.stringify(invitee.password)});
+    setValue.call(password, passwordValue);
     password.dispatchEvent(new Event("input", { bubbles: true }));
     password.closest("form")?.requestSubmit();
     return "submitted";
-  })()`);
+  }`, [invitee.name, invitee.password]);
   expect(submitted).toBe("submitted");
 
-  await waitFor(
-    browser,
-    `[...document.querySelectorAll("button")].some((button) => (button.textContent ?? "").trim() === ${JSON.stringify(`Join ${orgName}`)} && !button.disabled)`,
-    { timeoutMs: 90_000, label: "signed-in one-click join step after in-invite sign-up" },
-  );
+  const joinLabel = `Join ${orgName}`;
+  await expect.poll(
+    () => callFunctionOnSurface(browser, `function (expectedLabel) {
+      return [...document.querySelectorAll("button")]
+        .some((button) => (button.textContent ?? "").trim() === expectedLabel && !button.disabled);
+    }`, [joinLabel]),
+    {
+      message: "signed-in one-click join step did not appear after in-invite sign-up",
+      timeout: 90_000,
+      interval: 250,
+    },
+  ).toBe(true);
 
   const authCalls: unknown = await evalIn(browser, "JSON.stringify(window.__authCalls ?? [])");
   const calls: string[] = JSON.parse(String(authCalls)) as string[];
@@ -231,13 +238,13 @@ test(title, { timeout: 1_800_000 }, async ({ evidence, place }) => {
   );
 
   // ── Frame 2: joining lands on the clean token-free install guide ─────────
-  const joined = await evalIn(browser, `(() => {
+  const joined = await callFunctionOnSurface(browser, `function (expectedLabel) {
     const button = [...document.querySelectorAll("button")]
-      .find((candidate) => (candidate.textContent ?? "").trim() === ${JSON.stringify(`Join ${orgName}`)} && !candidate.disabled);
+      .find((candidate) => (candidate.textContent ?? "").trim() === expectedLabel && !candidate.disabled);
     if (!(button instanceof HTMLButtonElement)) return false;
     button.click();
     return true;
-  })()`);
+  }`, [joinLabel]);
   expect(joined).toBe(true);
 
   await waitFor(
@@ -401,26 +408,31 @@ test(title, { timeout: 1_800_000 }, async ({ evidence, place }) => {
       true,
     );
 
-    const typeIntoGate = (value: string) => evalIn(desktopSurface, `(() => {
+    const typeIntoGate = (value: string) => callFunctionOnSurface(desktopSurface, `function (inputValue) {
       const input = document.querySelector('#organization-server-input');
       if (!(input instanceof HTMLInputElement)) return "no input";
       const setValue = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value").set;
-      setValue.call(input, ${JSON.stringify(value)});
+      setValue.call(input, inputValue);
       input.dispatchEvent(new Event("input", { bubbles: true }));
       input.closest("form")?.requestSubmit();
       return "submitted";
-    })()`);
+    }`, [value]);
 
     // Server-first path up to the browser handoff: typing the address reaches
     // the explicit origin-naming confirmation with Continue in browser.
     expect(await typeIntoGate(webOrigin)).toBe("submitted");
-    await waitFor(
-      desktopSurface,
-      `Boolean(document.querySelector('[data-testid="organization-server-confirm"]'))
-        && document.body.innerText.includes(${JSON.stringify(webOrigin)})
-        && document.body.innerText.includes("Continue in browser")`,
-      { timeoutMs: 30_000, label: "origin-naming confirmation for the typed address" },
-    );
+    await expect.poll(
+      () => callFunctionOnSurface(desktopSurface, `function (expectedOrigin) {
+        return Boolean(document.querySelector('[data-testid="organization-server-confirm"]'))
+          && document.body.innerText.includes(expectedOrigin)
+          && document.body.innerText.includes("Continue in browser");
+      }`, [webOrigin]),
+      {
+        message: "origin-naming confirmation did not appear for the typed address",
+        timeout: 30_000,
+        interval: 250,
+      },
+    ).toBe(true);
     await screenshot(desktopSurface);
     evidence.recordAssertionEvidence(
       "Typing the workspace address reaches the named-origin confirmation",

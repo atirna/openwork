@@ -332,7 +332,7 @@ describe("OpenWork Connect skill catalog", () => {
 
     const working = skillIndexFetcher("skill:skill_live");
     const fetcher = async (url: string, init?: RequestInit) => {
-      if (url.startsWith("https://stale.local.test")) {
+      if (new URL(url).origin === "https://stale.local.test") {
         return Response.json({ error: "mcp_session_revoked" }, { status: 401 });
       }
       return working(url, init);

@@ -25,11 +25,16 @@
       "types": "./src/den-urls.ts",
       "development": "./src/den-urls.ts",
       "default": "./dist/den-urls.js"
+    },
+    "./inference-bearer-key": {
+      "types": "./src/inference-bearer-key.ts",
+      "development": "./src/inference-bearer-key.ts",
+      "default": "./dist/inference-bearer-key.js"
     }
   },
   "scripts": {
     "build": "tsup",
-    "test": "bun test src/observability.test.ts src/den-urls.test.ts"
+    "test": "bun test src/observability.test.ts src/den-urls.test.ts src/inference-bearer-key.test.ts"
   },
   "dependencies": {
     "luxon": "^3.6.1",

@@ -9,6 +9,7 @@
   "scripts": {
     "dev": "OPENWORK_DEV_MODE=1 bun --conditions=development src/cli.ts",
     "test": "bun --conditions=development test",
+    "test:coverage": "bun --conditions=development test --coverage --coverage-reporter=text --coverage-reporter=lcov --coverage-dir=coverage",
     "test:artifacts": "bun --conditions=development test src/artifact-files.e2e.test.ts src/workspace-init.test.ts src/server.normalizeWorkspaceRelativePath.test.ts",
     "build:enterprise-mcp-client": "pnpm --filter @openwork/enterprise-mcp-client build",
     "build": "pnpm build:enterprise-mcp-client && tsc -p tsconfig.json && bun build src/opencode-plugins/openwork-extensions-preview.ts src/opencode-plugins/openwork-capabilities-knowledge.ts src/opencode-plugins/openwork-office-attachments.ts src/opencode-plugins/openwork-anthropic-adaptive-thinking.ts src/opencode-plugins/openwork-anthropic-tool-schema.ts --outdir dist/opencode-plugins --target node --format esm",
@@ -55,6 +56,7 @@
     "@openwork/enterprise-mcp-client": "workspace:*",
     "better-sqlite3": "^13.0.2",
     "drizzle-orm": "^0.45.2",
+    "htmlparser2": "8.0.2",
     "jsonc-parser": "^3.2.1",
     "minimatch": "^10.2.5",
     "undici": "6.28.0",

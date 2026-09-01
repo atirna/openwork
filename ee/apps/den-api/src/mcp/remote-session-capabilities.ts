@@ -1,4 +1,4 @@
-import { createHeadlessThreadClient, toTranscript, type HeadlessThreadClient, type HeadlessThreadModel } from "@openwork/headless-threads"
+import { createHeadlessThreadClient, toTranscript, type AgentSessionClient, type HeadlessThreadModel } from "@openwork/headless-threads"
 import { and, eq, isNull } from "@openwork-ee/den-db/drizzle"
 import { MemberTable, OrganizationTable } from "@openwork-ee/den-db/schema/org"
 import { createDenTypeId, normalizeDenTypeId, type DenTypeId } from "@openwork-ee/utils/typeid"
@@ -201,7 +201,7 @@ export type RemoteSessionRuntimeResult =
       retryable: boolean
     }
 
-export type RemoteSessionThreadClient = Pick<HeadlessThreadClient, "createThread" | "sendTurn" | "getThreadSnapshot">
+export type RemoteSessionThreadClient = Pick<AgentSessionClient, "createThread" | "sendTurn" | "getThreadSnapshot">
 
 export type RemoteSessionExecuteDeps = {
   resolveRuntime: (scope: { organizationId: DenTypeId<"organization">; userId: string }) => Promise<RemoteSessionRuntimeResult>
@@ -248,6 +248,17 @@ export function remoteSessionCapabilitiesEnabled(
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null
+}
+
+function normalizeToolBody(body: unknown): unknown {
+  if (typeof body !== "string") return body
+  const trimmed = body.trim()
+  if (!trimmed.startsWith("{") && !trimmed.startsWith("[")) return body
+  try {
+    return JSON.parse(trimmed)
+  } catch {
+    return body
+  }
 }
 
 function sleep(ms: number): Promise<void> {
@@ -455,7 +466,7 @@ export async function executeRemoteSessionCapability(
     })
   }
 
-  const parsedBody = BODY_SCHEMAS[input.action].safeParse(input.body ?? {})
+  const parsedBody = BODY_SCHEMAS[input.action].safeParse(normalizeToolBody(input.body) ?? {})
   if (!parsedBody.success) {
     return errorResult({
       error: "invalid_capability_arguments",

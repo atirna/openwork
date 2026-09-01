@@ -51,6 +51,10 @@ run(nodeCmd, [resolve(__dirname, "prepare-runtime-node-modules.mjs"), "--outdir"
 writeSentryBuildConfig();
 // Build the server TS → JS so Electron can import it in-process
 run(pnpmCmd, ["--filter", "openwork-server", "build"], repoRoot);
+// automation-runner.mjs imports @openwork/headless-threads through its
+// published "default" export (dist/index.js); build it so plain-node
+// consumers resolve it in packaged layouts.
+run(pnpmCmd, ["--filter", "@openwork/headless-threads", "build"], repoRoot);
 // OPENWORK_ELECTRON_BUILD tells Vite to emit relative asset paths so
 // index.html resolves /assets/* correctly when loaded via file:// from
 // inside the packaged .app bundle.

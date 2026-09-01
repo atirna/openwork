@@ -3,7 +3,9 @@ import { useCallback, useMemo } from "react";
 
 import type { createClient } from "../../../../app/lib/opencode";
 import type { OpenworkServerClient, OpenworkWorkspaceInfo } from "../../../../app/lib/openwork-server";
+import { deleteNativeSession } from "../../../../app/lib/opencode-session-native";
 import { setSessionArchived } from "../../../../app/lib/opencode-session";
+import type { ResolvedWorkspaceEndpoint } from "../../../../app/lib/workspace-endpoint";
 import { getDisplaySessionTitle } from "../../../../app/lib/session-title";
 import { useControlAction, type OpenworkControlAction } from "../../../shell/control/control-provider";
 import { useSessionManagementStore } from "../sidebar/session-management-store";
@@ -19,7 +21,7 @@ type SessionLike = {
 };
 
 type SessionControlWorkspace = OpenworkWorkspaceInfo & {
-  displayNameResolved?: string;
+  displayNameResolved: string;
 };
 
 type UseSessionControlActionsInput = {
@@ -31,6 +33,7 @@ type UseSessionControlActionsInput = {
   canCreateTask: boolean;
   openworkClient: OpenworkServerClient | null;
   opencodeClient: ReturnType<typeof createClient> | null;
+  endpointForWorkspace: (workspace: SessionControlWorkspace | null | undefined) => ResolvedWorkspaceEndpoint | null;
   navigateToSession: (sessionId: string) => void;
   navigateToSessionRoot: () => void;
   createTaskInWorkspace: (workspaceId: string) => Promise<string | null> | string | null;
@@ -69,6 +72,7 @@ export function useSessionControlActions(input: UseSessionControlActionsInput) {
   const {
     canCreateTask,
     createTaskInWorkspace,
+    endpointForWorkspace,
     navigateToSession,
     navigateToSessionRoot,
     openModelPicker,
@@ -210,14 +214,16 @@ export function useSessionControlActions(input: UseSessionControlActionsInput) {
 
       const targetWorkspace = findSessionWorkspace(workspaces, sessionsByWorkspaceId, sessionId);
       if (!targetWorkspace) return { ok: false, error: "Session was not found in the current session list" };
-      await openworkClient.deleteSession(targetWorkspace.id, sessionId);
+      const endpoint = endpointForWorkspace(targetWorkspace);
+      if (!endpoint) return { ok: false, error: "Workspace runtime is not connected" };
+      await deleteNativeSession(endpoint, sessionId);
       if (selectedSessionId === sessionId) {
         navigateToSessionRoot();
       }
       await refreshRouteState();
       return { ok: true, sessionId, deleted: true };
     },
-  }), [navigateToSessionRoot, openworkClient, refreshRouteState, selectedSessionId, sessionsByWorkspaceId, workspaces]);
+  }), [endpointForWorkspace, navigateToSessionRoot, openworkClient, refreshRouteState, selectedSessionId, sessionsByWorkspaceId, workspaces]);
   useControlAction(deleteSessionControlAction);
 
   const modelPickerControlAction = useMemo<OpenworkControlAction>(() => ({

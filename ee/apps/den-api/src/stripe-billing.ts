@@ -14,6 +14,7 @@ import type { DenOrgMode } from "./env.js"
 import { setInferenceEnabled } from "./inference.js"
 import { appLogger } from "./observability/logger.js"
 import { isOpenWorkWebAvailable } from "./openwork-web-availability.js"
+import { hasOpenWorkWebComplimentaryAccess, resolveOpenWorkWebAccess } from "./openwork-web-access.js"
 
 type OrgId = typeof OrganizationTable.$inferSelect.id
 type MemberId = typeof MemberTable.$inferSelect.id
@@ -175,6 +176,15 @@ async function joinedMemberCount(organizationId: OrgId) {
       isNull(MemberTable.removedAt),
     ))
   return normalizeSeatCount(Number(row?.count ?? 0))
+}
+
+async function organizationOpenWorkWebComplimentaryAccess(organizationId: OrgId) {
+  const rows = await db
+    .select({ metadata: OrganizationTable.metadata })
+    .from(OrganizationTable)
+    .where(eq(OrganizationTable.id, organizationId))
+    .limit(1)
+  return hasOpenWorkWebComplimentaryAccess(rows[0]?.metadata)
 }
 
 export function isOpenWorkWebBillableMember(input: { joinedAt: Date | null; removedAt: Date | null }) {
@@ -419,6 +429,14 @@ function isOngoingConfiguredOpenWorkWebSubscriptionRow(row: Awaited<ReturnType<t
 
 export async function organizationHasEligibleOpenWorkWebSubscription(organizationId: OrgId) {
   return isEligibleOpenWorkWebSubscriptionRow(await findWebSubscriptionByOrg(organizationId))
+}
+
+export async function organizationHasOngoingOpenWorkWebSubscription(organizationId: OrgId) {
+  let row = await findWebSubscriptionByOrg(organizationId)
+  if (row?.stripe_subscription_id) {
+    row = await refreshOrgSubscriptionFromStripe(row.stripe_subscription_id)
+  }
+  return Boolean(row && isOngoingOpenWorkWebSubscriptionStatus(row.status))
 }
 
 export async function getOrganizationSeatAddEligibility(organizationId: OrgId) {
@@ -907,8 +925,18 @@ function serializeOpenWorkWebSubscription(row: Awaited<ReturnType<typeof findWeb
 }
 
 async function loadOpenWorkWebBillingSummary(organizationId: OrgId) {
-  const row = await findWebSubscriptionByOrg(organizationId)
-  const billing = calculateOpenWorkWebBilling({ joinedMemberCount: await joinedMemberCount(organizationId) })
+  const [row, memberCount, complimentaryAccess] = await Promise.all([
+    findWebSubscriptionByOrg(organizationId),
+    joinedMemberCount(organizationId),
+    organizationOpenWorkWebComplimentaryAccess(organizationId),
+  ])
+  const billing = calculateOpenWorkWebBilling({ joinedMemberCount: memberCount })
+  const hasEligibleSubscription = isEligibleOpenWorkWebSubscriptionRow(row)
+  const access = resolveOpenWorkWebAccess({
+    deploymentAvailable: isOpenWorkWebAvailable(),
+    hasEligibleSubscription,
+    complimentaryAccess,
+  })
   return {
     row,
     summary: {
@@ -921,7 +949,8 @@ async function loadOpenWorkWebBillingSummary(organizationId: OrgId) {
       quantityDescription: "Every joined, non-removed organization member; pending invitations are excluded.",
       quantity: billing.quantity,
       expectedMonthlyTotal: billing.expectedMonthlyTotal,
-      hasEligibleSubscription: isEligibleOpenWorkWebSubscriptionRow(row),
+      hasEligibleSubscription,
+      ...access,
       subscription: serializeOpenWorkWebSubscription(row),
     },
   }

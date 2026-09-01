@@ -9,6 +9,7 @@ import { toast } from "@/components/ui/sonner";
 import { captureAnalyticsEvent } from "@/app/lib/analytics";
 import { createClient, unwrap } from "@/app/lib/opencode";
 import { abortSessionSafe } from "@/app/lib/opencode-session";
+import { composeNativeSessionSnapshot } from "@/app/lib/opencode-session-native";
 import { setThemeMode } from "@/app/theme";
 import { t } from "@/i18n";
 import type { ComposerSettingsSection } from "@/react-app/domains/settings/library";
@@ -75,6 +76,7 @@ import { interruptedTaskRecoveryPrompt } from "@/react-app/domains/session/sync/
 import { useLocal } from "@/react-app/kernel/local-provider";
 import { resolveAttachmentFileMetadata } from "@/react-app/domains/session/sync/attachment-file-part";
 import { deriveSessionRenderModel } from "@/react-app/domains/session/sync/transition-controller";
+import { setQueuedSendContext } from "@/react-app/domains/session/sync/queued-send-context";
 import { useSessionScrollController } from "./scroll-controller";
 import { SessionScrollOverlay } from "./scroll-overlay";
 import { SessionFindBar } from "./find-bar";
@@ -860,6 +862,7 @@ export function SessionSurface(props: SessionSurfaceProps) {
   const pasteParts = useComposerStateStore((state) => getComposerPasteParts(state, props.sessionId));
   const setComposerDraft = useComposerStateStore((state) => state.setDraft);
   const replaceComposerDraft = useComposerStateStore((state) => state.replaceDraft);
+  const hydrateComposerDraft = useComposerStateStore((state) => state.hydrateDraft);
   const clearComposerRevertTarget = useComposerStateStore((state) => state.clearRevertTarget);
   const setComposerAttachments = useComposerStateStore((state) => state.setAttachments);
   const setComposerMentions = useComposerStateStore((state) => state.setMentions);
@@ -874,6 +877,7 @@ export function SessionSurface(props: SessionSurfaceProps) {
     scopeKey: string;
     snapshot: typeof persistedDraftSnapshot;
   } | null>(null);
+  const [hydratedDraftScopeKey, setHydratedDraftScopeKey] = useState<string | null>(null);
 
   // Layout timing is intentional: an account/org boundary must replace the
   // previous scope's in-memory Zustand draft before the browser can paint it.
@@ -891,19 +895,21 @@ export function SessionSurface(props: SessionSurfaceProps) {
     const currentState = useComposerStateStore.getState();
     const currentDraft = getComposerDraft(currentState, props.sessionId);
     const nextDraft = persistedDraftSnapshot?.text ?? "";
-    if (!composerDraftNeedsHydration({
+    const needsHydration = composerDraftNeedsHydration({
       claimedScopeKey,
       nextScopeKey: persistedDraftKey,
       currentText: currentDraft,
       storedText: nextDraft,
-    })) return;
+    });
 
-    for (const attachment of getComposerAttachments(currentState, props.sessionId)) {
-      revokeAttachmentPreview(attachment);
+    if (needsHydration) {
+      for (const attachment of getComposerAttachments(currentState, props.sessionId)) {
+        revokeAttachmentPreview(attachment);
+      }
+      hydrateComposerDraft(props.sessionId, nextDraft);
     }
-    clearComposerSession(props.sessionId);
-    if (nextDraft) replaceComposerDraft(props.sessionId, nextDraft);
-  }, [clearComposerSession, persistedDraftKey, persistedDraftSnapshot, props.sessionId, replaceComposerDraft]);
+    setHydratedDraftScopeKey(persistedDraftKey);
+  }, [hydrateComposerDraft, persistedDraftKey, persistedDraftSnapshot, props.sessionId]);
   const inputHistory = useComposerStateStore((state) => getComposerHistory(state, props.sessionId));
   const appendComposerHistory = useComposerStateStore((state) => state.appendHistory);
   // Queued follow-up drafts live in the shared composer store keyed by session
@@ -911,6 +917,32 @@ export function SessionSurface(props: SessionSurfaceProps) {
   // session B when the route swaps the same surface component to another
   // session.
   const queuedItems = useComposerStateStore((state) => getComposerQueuedDrafts(state, props.sessionId));
+  useEffect(() => {
+    if (queuedItems.length === 0) return;
+    setQueuedSendContext(props.sessionId, {
+      workspaceId: props.workspaceId,
+      workspaceRoot: props.workspaceRoot,
+      opencodeBaseUrl: props.opencodeBaseUrl,
+      openworkToken: props.openworkToken,
+      client: props.client,
+      agent: props.selectedAgent,
+      variant: props.modelVariant,
+      model: props.selectedModel,
+      environmentRuntimeKey: props.environmentRuntimeKey ?? null,
+    });
+  }, [
+    props.client,
+    props.environmentRuntimeKey,
+    props.modelVariant,
+    props.opencodeBaseUrl,
+    props.openworkToken,
+    props.selectedAgent,
+    props.selectedModel,
+    props.sessionId,
+    props.workspaceId,
+    props.workspaceRoot,
+    queuedItems.length,
+  ]);
   const appendQueuedDraft = useComposerStateStore((state) => state.appendQueuedDraft);
   const removeQueuedDraftFromStore = useComposerStateStore((state) => state.removeQueuedDraft);
   const updateQueuedDraftInStore = useComposerStateStore((state) => state.updateQueuedDraft);
@@ -1019,9 +1051,13 @@ export function SessionSurface(props: SessionSurfaceProps) {
   );
   const snapshotQuery = useQuery<OpenworkSessionSnapshot>({
     queryKey: snapshotQueryKey,
-    queryFn: async () => {
+    queryFn: async ({ signal }) => {
       const startedAt = Date.now();
-      const item = (await props.client.getSessionSnapshot(props.workspaceId, props.sessionId, { limit: 140 })).item;
+      const item = await composeNativeSessionSnapshot(
+        { opencodeBaseUrl: props.opencodeBaseUrl, token: props.openworkToken },
+        props.sessionId,
+        { limit: 140, signal },
+      );
       markSessionSnapshotFetchStart(item, startedAt);
       return item;
     },
@@ -1889,10 +1925,12 @@ export function SessionSurface(props: SessionSurfaceProps) {
   }, [props.cloudMcpSubmissionState.status, props.sessionId]);
 
   useEffect(() => {
+    if (hydratedDraftScopeKey !== persistedDraftKey) return;
     const nextDraft = buildDraft(draft, attachments);
-    persistDraft({ text: persistableComposerDraftText(nextDraft.text), mode: nextDraft.mode });
+    const persistableText = persistableComposerDraftText(nextDraft.text);
+    persistDraft({ text: persistableText, mode: nextDraft.mode });
     props.onDraftChange(nextDraft);
-  }, [attachments, buildDraft, draft, persistDraft, props.onDraftChange]);
+  }, [attachments, buildDraft, draft, hydratedDraftScopeKey, persistDraft, persistedDraftKey, props.onDraftChange]);
 
   const handleAttachFiles = useCallback((files: File[]) => {
     if (!props.attachmentsEnabled) {

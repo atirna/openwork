@@ -247,6 +247,81 @@ describe("gateway runtime mode", () => {
     ]);
   });
 
+  test("reads Den-authored Web access through the gateway for the selected organization", async () => {
+    installWindow({ origin: "https://gw.example", gateway: true });
+    const requests: Array<{
+      url: string;
+      authorization: string | null;
+      organizationId: string | null;
+    }> = [];
+    Object.defineProperty(globalThis, "fetch", {
+      configurable: true,
+      value: async (input: RequestInfo | URL, init?: RequestInit) => {
+        const url = getRequestUrl(input);
+        const headers = new Headers(init?.headers);
+        requests.push({
+          url,
+          authorization: headers.get("authorization"),
+          organizationId: headers.get("x-openwork-org-id"),
+        });
+        if (new URL(url).pathname === "/api/den/v1/org") {
+          return Response.json({ capabilities: { openworkWeb: true } });
+        }
+        return Response.json({
+          billing: {
+            stripe: {
+              web: {
+                hasAccess: true,
+                accessSource: "complimentary",
+                hasEligibleSubscription: false,
+                complimentaryAccess: true,
+              },
+            },
+          },
+        });
+      },
+    });
+
+    const access = await createDenClient({
+      baseUrl: readDenSettings().baseUrl,
+      token: "tok_test",
+    }).getOpenWorkWebAccess("org_test");
+
+    expect(access).toEqual({ hasAccess: true, accessSource: "complimentary" });
+    expect(requests).toEqual([
+      {
+        url: "https://gw.example/api/den/v1/org",
+        authorization: "Bearer tok_test",
+        organizationId: "org_test",
+      },
+      {
+        url: "https://gw.example/api/den/v1/billing/web",
+        authorization: "Bearer tok_test",
+        organizationId: "org_test",
+      },
+    ]);
+  });
+
+  test("keeps Web locked without calling billing when an older Den omits the capability", async () => {
+    installWindow({ origin: "https://gw.example", gateway: true });
+    const requestedUrls: string[] = [];
+    Object.defineProperty(globalThis, "fetch", {
+      configurable: true,
+      value: async (input: RequestInfo | URL) => {
+        requestedUrls.push(getRequestUrl(input));
+        return Response.json({ capabilities: {} });
+      },
+    });
+
+    const access = await createDenClient({
+      baseUrl: readDenSettings().baseUrl,
+      token: "tok_test",
+    }).getOpenWorkWebAccess("org_test");
+
+    expect(access).toEqual({ hasAccess: false, accessSource: null });
+    expect(requestedUrls).toEqual(["https://gw.example/api/den/v1/org"]);
+  });
+
   test("uses the gateway Den API proxy for MCP", () => {
     installWindow({ origin: "https://gw.example", gateway: true });
 

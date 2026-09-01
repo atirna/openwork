@@ -1,11 +1,19 @@
-import { createHash } from "node:crypto";
+import { createHash, webcrypto } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import type { createOpencodeClient, McpStatus, ToolIds, ToolList } from "@opencode-ai/sdk/v2/client";
 import { ApiError } from "./errors.js";
 import { diagnoseMcpToolDenies, type McpToolDeny } from "./mcp.js";
 import { openworkPluginPath } from "./openwork-extensions-plugin-path.js";
 import { sanitizeDiagnosticString, sanitizeDiagnosticValue } from "./diagnostic-sanitizer.js";
-import { readRuntimeOpencodeConfig, runtimeMcpMap, writeRuntimeOpencodeConfig } from "./runtime-opencode-config-store.js";
+import {
+  ENGINE_GLOBAL_RUNTIME_CONFIG_ID,
+  listRuntimeOpencodeConfigRows,
+  readGlobalRuntimeOpencodeConfig,
+  readRuntimeOpencodeConfig,
+  runtimeMcpMap,
+  writeGlobalRuntimeOpencodeConfig,
+  writeRuntimeOpencodeConfig,
+} from "./runtime-opencode-config-store.js";
 import { externalFetch } from "./server-fetch.js";
 import type { ServerConfig, WorkspaceInfo } from "./types.js";
 import { validateMcpConfig } from "./validators.js";
@@ -624,10 +632,9 @@ function authorizationHeader(config: Record<string, unknown>): string | null {
   return null;
 }
 
-function tokenHealthFromConfig(config: Record<string, unknown> | null, metadata?: Record<string, string | number | boolean | null>): CloudMcpTokenHealth {
+export function cloudMcpTokenHealthFromConfig(config: Record<string, unknown> | null, metadata?: Record<string, string | number | boolean | null>): CloudMcpTokenHealth {
   const authorization = config ? authorizationHeader(config) : null;
   const tokenMetadata: Record<string, string | number | boolean | null> = { ...(metadata ?? {}) };
-  if (authorization) tokenMetadata.authorizationHash = hashString(authorization);
   return {
     present: Boolean(authorization) || Object.keys(tokenMetadata).length > 0,
     metadata: tokenMetadata,
@@ -644,7 +651,7 @@ function extractDesiredMetadata(body: Record<string, unknown>, config: Record<st
   const trigger = readString(body.trigger);
   const connectCatalogEnabled = readBoolean(body.connectCatalogEnabled) ?? true;
   return {
-    token: tokenHealthFromConfig(config, tokenMetadata),
+    token: cloudMcpTokenHealthFromConfig(config, tokenMetadata),
     ...(org ? { org } : {}),
     ...(app ? { app } : {}),
     connectCatalogEnabled,
@@ -655,7 +662,7 @@ function extractDesiredMetadata(body: Record<string, unknown>, config: Record<st
 
 function defaultDesiredMetadata(config: Record<string, unknown> | null, connectCatalogEnabled: boolean): CloudMcpDesiredMetadata {
   return {
-    token: tokenHealthFromConfig(config),
+    token: cloudMcpTokenHealthFromConfig(config),
     connectCatalogEnabled,
     updatedAt: Date.now(),
   };
@@ -684,6 +691,47 @@ function canonicalizeCloudMcpConfig(config: Record<string, unknown>): Record<str
   const url = readString(config.url);
   const normalizedUrl = url ? normalizeCloudEndpointUrl(url) : null;
   return normalizedUrl ? { ...config, url: normalizedUrl } : config;
+}
+
+const BUILT_IN_CLOUD_MCP_ORIGINS = new Set([
+  "https://api.openworklabs.com",
+  "https://api.app.openworklabs.com",
+]);
+
+function isLoopbackHostname(hostname: string): boolean {
+  const normalized = hostname.toLowerCase();
+  return normalized === "localhost" || normalized === "127.0.0.1" || normalized === "[::1]" || normalized === "::1";
+}
+
+/**
+ * Whether a proposed openwork-cloud endpoint may be persisted as the
+ * account-global desired config by a collaborator-scoped client.
+ *
+ * The desired config is global: one write reconfigures Connect for every
+ * workspace this server hosts. Built-in OpenWork Cloud origins, the
+ * administrator-activated enterprise Den origin, and loopback (local
+ * development Dens) are trusted; anything else requires owner scope so a
+ * collaborator on one shared workspace cannot silently redirect every other
+ * workspace's Connect tools to an attacker-controlled endpoint.
+ */
+export async function isTrustedCloudMcpEndpointForGlobalPersist(rawUrl: string): Promise<boolean> {
+  const normalized = normalizeCloudEndpointUrl(rawUrl);
+  // An unnormalizable URL cannot be persisted at all: strict desired-config
+  // validation fails closed downstream, so scope enforcement is moot here and
+  // the caller keeps the richer stage-tagged validation error.
+  if (!normalized) return true;
+  let url: URL;
+  try {
+    url = new URL(normalized);
+  } catch {
+    return true;
+  }
+  if (isLoopbackHostname(url.hostname)) return true;
+  if (url.protocol !== "https:") return false;
+  if (BUILT_IN_CLOUD_MCP_ORIGINS.has(url.origin)) return true;
+  const { readActivatedEnterpriseDenOrigin } = await import("./enterprise-den-origin.js");
+  const enterpriseOrigin = await readActivatedEnterpriseDenOrigin();
+  return enterpriseOrigin !== null && url.origin === enterpriseOrigin;
 }
 
 function normalizeCloudMcpConfig(input: unknown): Record<string, unknown> {
@@ -823,31 +871,38 @@ function redactedConfig(config: Record<string, unknown>): RedactedCloudMcpConfig
   };
 }
 
-function revisionValue(value: unknown, key?: string): unknown {
-  if (key && ["authorization", "token", "secret", "password", "cookie", "api_key", "api-key", "apikey", "client_secret"].includes(key.toLowerCase())) {
-    if (typeof value === "string") return { redacted: true, sha256: hashString(value) };
-    if (!isRecord(value) && !Array.isArray(value)) return "[REDACTED]";
-  }
+function revisionValue(value: unknown): unknown {
   if (typeof value === "string" || typeof value === "number" || typeof value === "boolean" || value === null) return value;
   if (Array.isArray(value)) return value.map((item) => revisionValue(item));
   if (!isRecord(value)) return null;
   const output: Record<string, unknown> = {};
   for (const nestedKey of Object.keys(value).sort()) {
     const nested = value[nestedKey];
-    if (nested !== undefined) output[nestedKey] = revisionValue(nested, nestedKey);
+    if (nested !== undefined) output[nestedKey] = revisionValue(nested);
   }
   return output;
 }
 
-export function calculateCloudMcpDesiredRevision(config: Record<string, unknown>, metadata: CloudMcpDesiredMetadata): string {
-  return hashString(JSON.stringify(revisionValue({
+// Delivery state is process-local, so this process-local key keeps revisions
+// useful for equality without exposing a reusable fingerprint of bearer auth.
+const cloudMcpRevisionKey = webcrypto.subtle.generateKey(
+  { name: "HMAC", hash: "SHA-256" },
+  false,
+  ["sign"],
+);
+
+export async function calculateCloudMcpDesiredRevision(config: Record<string, unknown>, metadata: CloudMcpDesiredMetadata): Promise<string> {
+  const revisionKey = await cloudMcpRevisionKey;
+  const revision = JSON.stringify(revisionValue({
     config,
     metadata: {
       token: metadata.token,
       org: metadata.org,
       connectCatalogEnabled: metadata.connectCatalogEnabled,
     },
-  })));
+  }));
+  const tag = await webcrypto.subtle.sign("HMAC", revisionKey, new TextEncoder().encode(revision));
+  return Buffer.from(tag).toString("hex");
 }
 
 async function readDesiredState(input: {
@@ -856,8 +911,7 @@ async function readDesiredState(input: {
   directory: string | null;
   connectCatalogEnabled?: boolean;
 }): Promise<CloudMcpDesiredState> {
-  const runtimeConfig = await readRuntimeOpencodeConfig(input.config, input.workspace.id);
-  const entry = runtimeMcpMap(runtimeConfig)[OPENWORK_CLOUD_MCP_NAME];
+  const entry = await readPersistedDesiredConfig(input.config, input.workspace.id);
   if (!entry) {
     const metadata = defaultDesiredMetadata(null, input.connectCatalogEnabled ?? false);
     return { present: false, revision: null, config: null, redactedConfig: null, metadata };
@@ -866,7 +920,7 @@ async function readDesiredState(input: {
   const storedMetadata = cloudMcpDeliveryState.latestMetadata(input.workspace, input.directory);
   const metadata = storedMetadata ?? defaultDesiredMetadata(config, input.connectCatalogEnabled ?? true);
   const validationProblem = strictCloudMcpDesiredConfigProblem(config, metadata) ?? undefined;
-  const revision = calculateCloudMcpDesiredRevision(config, metadata);
+  const revision = await calculateCloudMcpDesiredRevision(config, metadata);
   const revisionMetadata = cloudMcpDeliveryState.metadata(input.workspace, input.directory, revision) ?? metadata;
   return {
     present: true,
@@ -876,6 +930,89 @@ async function readDesiredState(input: {
     metadata: revisionMetadata,
     ...(validationProblem ? { validationProblem } : {}),
   };
+}
+
+async function readPersistedDesiredConfig(
+  config: ServerConfig,
+  workspaceId: string,
+): Promise<Record<string, unknown> | undefined> {
+  const globalEntry = runtimeMcpMap(await readGlobalRuntimeOpencodeConfig(config))[OPENWORK_CLOUD_MCP_NAME];
+  if (globalEntry) return globalEntry;
+  return runtimeMcpMap(await readRuntimeOpencodeConfig(config, workspaceId))[OPENWORK_CLOUD_MCP_NAME];
+}
+
+export async function migrateOpenworkCloudMcpRuntimeConfig(
+  config: ServerConfig,
+): Promise<{ config: Record<string, unknown> | null; changed: boolean }> {
+  const rows = await listRuntimeOpencodeConfigRows(config);
+  const globalRow = rows.find((row) => row.workspaceId === ENGINE_GLOBAL_RUNTIME_CONFIG_ID);
+  const globalEntry = globalRow
+    ? runtimeMcpMap(globalRow.value)[OPENWORK_CLOUD_MCP_NAME]
+    : undefined;
+  const legacyCandidates: Array<{ config: Record<string, unknown>; updatedAt: number; workspaceId: string }> = [];
+  for (const row of rows) {
+    if (row.workspaceId === ENGINE_GLOBAL_RUNTIME_CONFIG_ID) continue;
+    const entry = runtimeMcpMap(row.value)[OPENWORK_CLOUD_MCP_NAME];
+    if (!entry || !isRecord(entry)) continue;
+    const normalized = canonicalizeCloudMcpConfig(entry);
+    const metadata = defaultDesiredMetadata(normalized, true);
+    if (strictCloudMcpDesiredConfigProblem(normalized, metadata)) continue;
+    // Promotion escalates a workspace-scoped entry to account-global scope, so
+    // it must clear the same trust bar as a collaborator reconcile: a stale or
+    // planted workspace row pointing at an untrusted endpoint stays workspace-
+    // scoped (pre-migration blast radius) instead of becoming global.
+    const url = typeof normalized.url === "string" ? normalized.url : "";
+    if (!await isTrustedCloudMcpEndpointForGlobalPersist(url)) continue;
+    legacyCandidates.push({ config: normalized, updatedAt: row.updatedAt, workspaceId: row.workspaceId });
+  }
+  const newestValidLegacy = legacyCandidates
+    .sort((left, right) => right.updatedAt - left.updatedAt || left.workspaceId.localeCompare(right.workspaceId))[0];
+  const selected = globalEntry ?? newestValidLegacy?.config;
+  if (!selected || config.readOnly) return { config: selected ?? null, changed: false };
+
+  let changed = false;
+  if (!globalEntry) {
+    const result = await writeGlobalRuntimeOpencodeConfig(config, (current) => ({
+      ...current,
+      mcp: { ...runtimeMcpMap(current), [OPENWORK_CLOUD_MCP_NAME]: selected },
+    }));
+    changed = result.changed;
+  }
+  for (const row of rows) {
+    if (
+      row.workspaceId === ENGINE_GLOBAL_RUNTIME_CONFIG_ID
+      || !Object.hasOwn(runtimeMcpMap(row.value), OPENWORK_CLOUD_MCP_NAME)
+    ) continue;
+    const result = await writeRuntimeOpencodeConfig(config, row.workspaceId, (current) => ({
+      ...current,
+      mcp: Object.fromEntries(Object.entries(runtimeMcpMap(current))
+        .filter(([name]) => name !== OPENWORK_CLOUD_MCP_NAME)),
+    }));
+    changed = result.changed || changed;
+  }
+  return { config: selected, changed };
+}
+
+export async function removeOpenworkCloudMcpDesiredConfig(config: ServerConfig): Promise<boolean> {
+  let changed = false;
+  for (const row of await listRuntimeOpencodeConfigRows(config)) {
+    if (!Object.hasOwn(runtimeMcpMap(row.value), OPENWORK_CLOUD_MCP_NAME)) continue;
+    const result = row.workspaceId === ENGINE_GLOBAL_RUNTIME_CONFIG_ID
+      ? await writeGlobalRuntimeOpencodeConfig(config, (current) => ({
+          ...current,
+          mcp: Object.fromEntries(Object.entries(runtimeMcpMap(current))
+            .filter(([name]) => name !== OPENWORK_CLOUD_MCP_NAME)),
+        }))
+      : await writeRuntimeOpencodeConfig(config, row.workspaceId, (current) => ({
+          ...current,
+          mcp: Object.fromEntries(Object.entries(runtimeMcpMap(current))
+            .filter(([name]) => name !== OPENWORK_CLOUD_MCP_NAME)),
+        }));
+    changed = result.changed || changed;
+  }
+  const { writeConnectCloudMcp } = await import("./connect-state.js");
+  await writeConnectCloudMcp(config, null);
+  return changed;
 }
 
 function locationParams(directory: string | null): { directory?: string } {
@@ -2053,7 +2190,7 @@ async function readOpenworkCloudMcpHealthInternal(
       stage: "desired_config",
       retryable: false,
       recommendedAction: "Connect OpenWork Cloud",
-      message: "No openwork-cloud MCP desired config is persisted for this workspace.",
+      message: "No global openwork-cloud MCP desired config is persisted.",
       aliases: ["cloud_desired_missing"],
     }));
   }
@@ -2192,8 +2329,9 @@ export async function readOpenworkCloudMcpHealth(input: ReadOpenworkCloudMcpHeal
   return readOpenworkCloudMcpHealthInternal(input);
 }
 
-async function persistDesiredConfig(config: ServerConfig, workspaceId: string, desiredConfig: Record<string, unknown>): Promise<void> {
-  await writeRuntimeOpencodeConfig(config, workspaceId, (current) => ({
+async function persistDesiredConfig(config: ServerConfig, desiredConfig: Record<string, unknown>): Promise<{ changed: boolean }> {
+  const migrated = await migrateOpenworkCloudMcpRuntimeConfig(config);
+  const written = await writeGlobalRuntimeOpencodeConfig(config, (current) => ({
     ...current,
     mcp: {
       ...runtimeMcpMap(current),
@@ -2204,6 +2342,7 @@ async function persistDesiredConfig(config: ServerConfig, workspaceId: string, d
   // Dynamic import avoids a connect-state <-> cloud-mcp-health cycle.
   const { writeConnectCloudMcp } = await import("./connect-state.js");
   await writeConnectCloudMcp(config, desiredConfig);
+  return { changed: migrated.changed || written.changed };
 }
 
 function registrationFailure(failures: CloudMcpRuntimeRegistrationFailure[]): CloudMcpFailure {
@@ -2284,6 +2423,7 @@ export async function reconcileOpenworkCloudMcp(input: {
   createWorkspaceOpencodeClient: (config: ServerConfig, workspace: WorkspaceInfo) => WorkspaceOpencodeClient;
   registerRuntimeMcp: CloudMcpRuntimeRegistrar;
   refreshRegistrationFromLiveStatus?: CloudMcpLiveStatusObserver;
+  fanoutGlobalDesired?: boolean;
 }): Promise<CloudMcpHealth> {
   const readHealth = (directProbeReuse?: DirectProbeReuse) => readOpenworkCloudMcpHealthInternal({
     config: input.config,
@@ -2304,9 +2444,26 @@ export async function reconcileOpenworkCloudMcp(input: {
     const validationFailure = failureFromValidationProblem(validationProblem);
     return healthWithFailure(await readHealth(), validationFailure);
   }
-  const desiredRevision = calculateCloudMcpDesiredRevision(desiredConfig, metadata);
-  await persistDesiredConfig(input.config, input.workspace.id, desiredConfig);
+  const desiredRevision = await calculateCloudMcpDesiredRevision(desiredConfig, metadata);
+  const persisted = await persistDesiredConfig(input.config, desiredConfig);
   cloudMcpDeliveryState.markDesired(input.workspace, input.directory, desiredRevision, metadata);
+
+  // Re-deliver to other workspaces only when the global desired config actually
+  // changed: an unchanged reconcile must not bounce healthy connections elsewhere.
+  if (persisted.changed && input.fanoutGlobalDesired !== false) {
+    await Promise.all(input.config.workspaces
+      .filter((workspace) => workspace.id !== input.workspace.id)
+      .map(async (workspace) => {
+        const directory = workspace.workspaceType === "local" ? workspace.path : workspace.directory ?? null;
+        if (!directory) return;
+        await input.createWorkspaceOpencodeClient(input.config, workspace).mcp.disconnect({
+          name: OPENWORK_CLOUD_MCP_NAME,
+          ...locationParams(directory),
+        }).catch(() => undefined);
+        await input.registerRuntimeMcp(input.config, workspace, [OPENWORK_CLOUD_MCP_NAME], { throwOnFailure: false })
+          .catch(() => undefined);
+      }));
+  }
 
   if (!input.directory) {
     const directoryFailure = failure({
@@ -2393,8 +2550,9 @@ export async function reconcilePersistedOpenworkCloudMcp(input: {
   refreshRegistrationFromLiveStatus?: CloudMcpLiveStatusObserver;
   trigger?: string;
 }): Promise<CloudMcpHealth> {
-  const runtimeConfig = await readRuntimeOpencodeConfig(input.config, input.workspace.id);
-  const desiredConfig = runtimeMcpMap(runtimeConfig)[OPENWORK_CLOUD_MCP_NAME];
+  const migrated = await migrateOpenworkCloudMcpRuntimeConfig(input.config);
+  if (input.config.readOnly) return readOpenworkCloudMcpHealth(input);
+  const desiredConfig = migrated.config ?? await readPersistedDesiredConfig(input.config, input.workspace.id);
   if (!desiredConfig) {
     return readOpenworkCloudMcpHealth(input);
   }
@@ -2404,6 +2562,7 @@ export async function reconcilePersistedOpenworkCloudMcp(input: {
       config: desiredConfig,
       ...(input.trigger ? { trigger: input.trigger } : {}),
     },
+    fanoutGlobalDesired: false,
   });
 }
 
@@ -2463,8 +2622,7 @@ export async function refreshOpenworkCloudMcpEngine(input: {
     health,
   });
 
-  const runtimeConfig = await readRuntimeOpencodeConfig(input.config, input.workspace.id);
-  const desiredConfig = runtimeMcpMap(runtimeConfig)[OPENWORK_CLOUD_MCP_NAME];
+  const desiredConfig = await readPersistedDesiredConfig(input.config, input.workspace.id);
   if (!desiredConfig) {
     return finish(false, await readOpenworkCloudMcpHealth({ ...input, probe: true }), "desired_missing");
   }

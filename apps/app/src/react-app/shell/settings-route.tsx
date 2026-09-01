@@ -49,6 +49,7 @@ import {
   downloadWorkspaceJson,
   getSessionStatus,
   isActiveSessionStatus,
+  listRouteSessions,
   mapDesktopWorkspace,
   mergeRouteWorkspaces,
   orderRouteWorkspaces,
@@ -759,6 +760,13 @@ function SettingsRouteContent(props: SettingsSurfaceProps = {}) {
   refreshMcpServersRef.current = connectionsStore.refreshMcpServers;
   notifyMcpReloadingRef.current = connectionsStore.notifyMcpReloading;
   pollMcpServersAfterReloadRef.current = connectionsStore.pollMcpServersAfterReload;
+  // Stable identity: McpView reloads opencode.json whenever this prop changes,
+  // so an inline lambda would refetch the config on every settings re-render
+  // (store snapshots tick every few seconds while idle on the Library page).
+  const readMcpConfigFile = useCallback(
+    (scope: "project" | "global") => connectionsStore.readMcpConfigFile(scope),
+    [connectionsStore],
+  );
   const providerAuthStore = useMemo(
     () =>
       createProviderAuthStore({
@@ -1503,15 +1511,15 @@ function SettingsRouteContent(props: SettingsSurfaceProps = {}) {
           }
           try {
             const response = await readRouteSessionsWithRetry({
-              load: () => endpoint.client.listSessions(endpoint.workspaceId, { limit: 200 }),
+              load: () => listRouteSessions(endpoint),
               retryDelaysMs: [250, 750, 1_500],
             });
             const workspaceRoot = normalizeDirectoryPath(workspace.path ?? "");
             const items = workspaceRoot && !endpoint.isRemote
-              ? (response.items ?? []).filter((session) =>
+              ? response.filter((session) =>
                   normalizeDirectoryPath(session?.directory ?? "") === workspaceRoot,
                 )
-              : (response.items ?? []);
+              : response;
             return {
               workspaceId: workspace.id,
               sessions: items,
@@ -2073,12 +2081,39 @@ function SettingsRouteContent(props: SettingsSurfaceProps = {}) {
       enablementContext,
       isBuiltInConnected: extensionController.isConnected,
     }),
-    [connectionsSnapshot.mcpServers, enablementContext, extensionController, extensionsSnapshot, extensionsStore, orgMcpConnections.connections, quickConnectCatalog],
+    [connectionsSnapshot.mcpServers, enablementContext, extensionController.isConnected, extensionsSnapshot, extensionsStore, orgMcpConnections.connections, quickConnectCatalog],
   );
   // Every connection the organization provisioned for this member, connected
   // or not: one that still needs the member's sign-in is the whole reason the
   // "Needs your attention" group exists, so it must not be filtered out here.
   const orgMcpConnectionItems = extensionItems.orgMcpConnectionItems;
+  const librarySkills = useMemo(
+    () => [
+      ...extensionItems.installedSkills,
+      ...connectCapabilities.skills.filter(
+        (skill) => !extensionItems.installedSkills.some(
+          (installed) => installed.name.toLowerCase() === skill.name.toLowerCase(),
+        ),
+      ),
+    ],
+    [connectCapabilities.skills, extensionItems.installedSkills],
+  );
+  const libraryConnectMcpServers = useMemo(
+    () => connectCapabilities.mcpServers.filter(
+      (entry) => !orgMcpConnectionItems.some((item) =>
+        item.name.localeCompare(entry.name, undefined, { sensitivity: "accent" }) === 0
+      ),
+    ),
+    [connectCapabilities.mcpServers, orgMcpConnectionItems],
+  );
+  const libraryConnectPlugins = useMemo(
+    () => connectPluginsForComposer(connectCapabilities.plugins),
+    [connectCapabilities.plugins],
+  );
+  const readLibrarySkill = useCallback(
+    (name: string) => extensionsStore.readSkill(name),
+    [extensionsStore],
+  );
   const organizationConnectionsProbe = resolveOrganizationConnectionsProbe({
     signedIn: cloudSession.isSignedIn,
     activeOrganizationId: cloudSession.activeOrganization?.id,
@@ -2495,25 +2530,14 @@ function SettingsRouteContent(props: SettingsSurfaceProps = {}) {
                     ? (name, enabled) => connectionsStore.setMcpEnabled(name, enabled)
                     : undefined
                 }
-                readConfigFile={(scope) => connectionsStore.readMcpConfigFile(scope)}
-                installedSkills={[
-                  ...extensionItems.installedSkills,
-                  ...connectCapabilities.skills.filter(
-                    (skill) => !extensionItems.installedSkills.some(
-                      (installed) => installed.name.toLowerCase() === skill.name.toLowerCase(),
-                    ),
-                  ),
-                ]}
+                readConfigFile={readMcpConfigFile}
+                installedSkills={librarySkills}
                 installedCommands={libraryCommands}
                 installedAgents={libraryAgents}
-                availableConnectMcpServers={connectCapabilities.mcpServers.filter(
-                  (entry) => !orgMcpConnectionItems.some((item) =>
-                    item.name.localeCompare(entry.name, undefined, { sensitivity: "accent" }) === 0
-                  ),
-                )}
+                availableConnectMcpServers={libraryConnectMcpServers}
                 availableConnectMcpStatuses={connectCapabilities.mcpStatuses}
                 inventoryLoading={connectCapabilitiesLoading || (orgMcpConnections.loading && !orgMcpConnections.loaded)}
-                installedPlugins={connectPluginsForComposer(connectCapabilities.plugins)}
+                installedPlugins={libraryConnectPlugins}
                 orgMcpItems={orgMcpConnectionItems}
                 organizationName={cloudSession.activeOrgName}
                 orgMcpError={orgMcpConnections.error}
@@ -2524,7 +2548,7 @@ function SettingsRouteContent(props: SettingsSurfaceProps = {}) {
                 reconnectOrgMcp={(connectionId) => { void orgMcpConnections.connect(connectionId, { forceFreshAuthorization: true }); }}
                 orgMcpDisconnectingId={orgMcpConnections.disconnectingId}
                 disconnectOrgMcp={(connectionId) => { void orgMcpConnections.disconnect(connectionId); }}
-                readSkill={(name) => extensionsStore.readSkill(name)}
+                readSkill={readLibrarySkill}
                 previewClaudePlugin={(url) => extensionsStore.previewClaudePlugin(url)}
                 installClaudePlugin={(url) => extensionsStore.installClaudePlugin(url)}
                 createLibraryItem={(kind, input) => extensionsStore.createLibraryItem(kind, input)}
@@ -2582,18 +2606,7 @@ function SettingsRouteContent(props: SettingsSurfaceProps = {}) {
             opencodeDevModeEnabled={false}
             openDebugDeepLink={async () => ({ ok: false, message: "Debug deep links are not wired into the React settings route yet." })}
             cloudMcpUrl={openworkCloudMcpUrl}
-            canMigrateRuntimeConfig={Boolean(openworkClient && selectedWorkspaceId)}
-            migrateRuntimeConfig={async () => {
-              if (!openworkClient || !selectedWorkspaceId) {
-                throw new Error("Select a workspace before migrating legacy runtime config.");
-              }
-              const result = await openworkClient.migrateRuntimeConfig(selectedWorkspaceId);
-              if (result.migrated) {
-                void connectionsStore.refreshMcpServers();
-                void extensionsStore.refreshPlugins();
-              }
-              return { migrated: result.migrated, keys: result.keys };
-            }}
+            canInspectRuntimeConfig={Boolean(openworkClient && selectedWorkspaceId)}
             getRuntimeConfigStatus={async () => {
               if (!openworkClient || !selectedWorkspaceId) {
                 throw new Error("Select a workspace to inspect runtime config.");

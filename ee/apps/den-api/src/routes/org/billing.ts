@@ -8,7 +8,7 @@ import { forbiddenSchema, jsonResponse, unauthorizedSchema } from "../../openapi
 import { getRequiredUserEmail } from "../../user.js"
 import { env } from "../../env.js"
 import { ORGANIZATION_SUPER_ADMIN_ROLE, organizationRoleValueSatisfies } from "../../organization-role-hierarchy.js"
-import { isOpenWorkWebAvailable } from "../../openwork-web-availability.js"
+import { isOpenWorkWebAvailableForOrganization } from "../../openwork-web-availability.js"
 import type { OrgRouteVariables } from "./shared.js"
 import { ensureOrganizationAdmin, ensureOrganizationSuperAdmin, orgAccessFailureStatus } from "./shared.js"
 
@@ -26,7 +26,7 @@ const openWorkWebUnavailableSchema = z.object({
 function openWorkWebUnavailableResponse(): { error: "openwork_web_not_available"; message: string } {
   return {
     error: "openwork_web_not_available",
-    message: "OpenWork Web is not available on this deployment.",
+    message: "OpenWork Web is not available for this organization.",
   }
 }
 
@@ -128,15 +128,15 @@ export function registerOrgBillingRoutes<T extends { Variables: OrgRouteVariable
       responses: {
         200: jsonResponse("OpenWork Web billing eligibility returned successfully.", stripeBillingResponseSchema),
         401: jsonResponse("The caller must be an organization member.", unauthorizedSchema),
-        404: jsonResponse("OpenWork Web is not available on this deployment.", openWorkWebUnavailableSchema),
+        404: jsonResponse("OpenWork Web is not available for this organization.", openWorkWebUnavailableSchema),
       },
     }),
     orgRoleRoute(["member"]),
     async (c) => {
-      if (!isOpenWorkWebAvailable()) {
+      const payload = c.get("organizationContext")
+      if (!isOpenWorkWebAvailableForOrganization(payload.organization.metadata)) {
         return c.json(openWorkWebUnavailableResponse(), 404)
       }
-      const payload = c.get("organizationContext")
       const web = await getOpenWorkWebBillingSummary(payload.organization.id)
       return c.json({ billing: { stripe: { web } } })
     },
@@ -193,7 +193,7 @@ export function registerOrgBillingRoutes<T extends { Variables: OrgRouteVariable
         200: jsonResponse("Stripe Checkout session created successfully.", stripeCheckoutResponseSchema),
         401: jsonResponse("The caller must be signed in to start billing.", unauthorizedSchema),
         403: jsonResponse("Only workspace owners and admins can start billing.", forbiddenSchema),
-        404: jsonResponse("OpenWork Web is not available on this deployment.", openWorkWebUnavailableSchema),
+        404: jsonResponse("OpenWork Web is not available for this organization.", openWorkWebUnavailableSchema),
       },
     }),
     orgRoleRoute(["admin"]),
@@ -214,8 +214,17 @@ export function registerOrgBillingRoutes<T extends { Variables: OrgRouteVariable
       }
       const payload = c.get("organizationContext")
       const subscriptionType = parsed.data.type ?? "inference"
-      if (subscriptionType === "web" && !isOpenWorkWebAvailable()) {
+      if (subscriptionType === "web" && !isOpenWorkWebAvailableForOrganization(payload.organization.metadata)) {
         return c.json(openWorkWebUnavailableResponse(), 404)
+      }
+      if (subscriptionType === "web") {
+        const webBilling = await getOpenWorkWebBillingSummary(payload.organization.id)
+        if (webBilling.complimentaryAccess) {
+          return c.json({
+            error: "openwork_web_complimentary_access_exists",
+            message: "OpenWork Web is already included for this organization without a Stripe subscription.",
+          }, 409)
+        }
       }
       const createCheckoutSession = subscriptionType === "seat"
         ? createSeatCheckoutSession

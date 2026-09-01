@@ -103,6 +103,7 @@ function run(command, args, options = {}) {
       cwd: rootDir,
       stdio: "inherit",
       ...options,
+      shell: false,
     })
 
     child.once("error", reject)
@@ -254,6 +255,7 @@ async function main() {
         DEN_AUTH_ORIGIN: process.env.DEN_AUTH_ORIGIN?.trim() || `http://localhost:${webPort}`,
         DEN_AUTH_FALLBACK_BASE: process.env.DEN_AUTH_FALLBACK_BASE?.trim() || `http://127.0.0.1:${apiPort}`,
       },
+      shell: false,
     },
   )
 

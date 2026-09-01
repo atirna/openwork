@@ -130,6 +130,7 @@ function json(res, status, body, headers = {}) {
 function text(res, status, body, headers = {}) {
   res.writeHead(status, {
     "access-control-allow-origin": "*",
+    "content-security-policy": "default-src 'none'; style-src 'unsafe-inline'; form-action 'self'; base-uri 'none'; frame-ancestors 'none'",
     "content-type": "text/html; charset=utf-8",
     ...headers,
   });
@@ -348,9 +349,11 @@ function authorizationServerMetadata() {
 
 function basicClient(req) {
   const header = req.headers.authorization || "";
-  const match = header.match(/^Basic\s+(.+)$/i);
-  if (!match) return null;
-  const decoded = Buffer.from(match[1], "base64").toString("utf8");
+  if (header.length < 7 || header.slice(0, 6).toLowerCase() !== "basic ") return null;
+  let credentialStart = 6;
+  while (header[credentialStart] === " ") credentialStart += 1;
+  if (credentialStart === header.length) return null;
+  const decoded = Buffer.from(header.slice(credentialStart), "base64").toString("utf8");
   const separator = decoded.indexOf(":");
   if (separator === -1) return { clientId: decoded, clientSecret: "" };
   return {
@@ -460,7 +463,7 @@ function authorize(req, res, url) {
     <h1>Mock MCP OAuth</h1>
     <p>This fake OAuth provider is for OpenWork MCP end-to-end tests.</p>
     ${requestedScopesHtml}
-    <form method="post" action="${approveUrl.pathname}${approveUrl.search}">
+    <form method="post" action="${escapeHtml(`${approveUrl.pathname}${approveUrl.search}`)}">
       <button style="font: inherit; padding: 10px 14px;">Approve OpenWork</button>
     </form>
   </body>
@@ -958,7 +961,8 @@ const server = http.createServer(async (req, res) => {
 
     json(res, 404, { error: "not_found" });
   } catch (error) {
-    json(res, 500, { error: error instanceof Error ? error.message : String(error) });
+    console.error("[mock-oauth-mcp] request failed", error);
+    json(res, 500, { error: "internal_server_error" });
   }
 });
 

@@ -78,12 +78,13 @@ function createInvalidToolStream() {
   ];
 }
 
-function hasBuiltInBrowserPrompt(haystack) {
-  return (
-    haystack.includes("built-in openwork browser") ||
-    haystack.includes("openwork browser") ||
-    haystack.includes("example.com")
-  );
+function hasFixtureText(text, marker) {
+  return text.split(marker).length > 1;
+}
+
+function hasBuiltInBrowserPrompt(promptText) {
+  return ["built-in openwork browser", "openwork browser", "example.com"]
+    .some((marker) => hasFixtureText(promptText, marker));
 }
 
 const args = parseArgs(process.argv.slice(2));

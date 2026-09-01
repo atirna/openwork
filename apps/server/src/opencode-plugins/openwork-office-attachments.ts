@@ -3,6 +3,7 @@ import { inflateRawSync } from "node:zlib";
 import { link, mkdir, readFile, realpath, rm, writeFile } from "node:fs/promises";
 import { basename, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
+import { Parser } from "htmlparser2";
 
 const DOCX_MIME = "application/vnd.openxmlformats-officedocument.wordprocessingml.document";
 const PPTX_MIME = "application/vnd.openxmlformats-officedocument.presentationml.presentation";
@@ -346,19 +347,55 @@ function compareEntryName(left: ZipEntry, right: ZipEntry): number {
   return left.name.localeCompare(right.name, undefined, { numeric: true, sensitivity: "base" });
 }
 
-function decodeXmlEntities(value: string): string {
-  return value
-    .replace(/&#x([0-9a-f]+);/gi, (_match, code: string) => String.fromCodePoint(Number.parseInt(code, 16)))
-    .replace(/&#(\d+);/g, (_match, code: string) => String.fromCodePoint(Number.parseInt(code, 10)))
-    .replaceAll("&lt;", "<")
-    .replaceAll("&gt;", ">")
-    .replaceAll("&amp;", "&")
-    .replaceAll("&quot;", '"')
-    .replaceAll("&apos;", "'");
+function assertSafeOfficeXml(xml: string): void {
+  if (Buffer.byteLength(xml, "utf8") > MAX_ENTRY_UNCOMPRESSED_BYTES) throw new Error("Office XML exceeds the parser input limit.");
+  const lower = xml.toLowerCase();
+  if (lower.includes("<!doctype") || lower.includes("<!entity")) throw new Error("Office XML DTD and entity declarations are not supported.");
+}
+
+function xmlLocalName(name: string): string {
+  const colon = name.lastIndexOf(":");
+  return (colon === -1 ? name : name.slice(colon + 1)).toLowerCase();
+}
+
+function parsedXmlText(xml: string, tagSeparator: string): string {
+  assertSafeOfficeXml(xml);
+  let text = "";
+  let omittedDepth = 0;
+  const omittedSeparator = tagSeparator || " ";
+  const parser = new Parser({
+    onopentag(name) {
+      if (omittedDepth > 0) {
+        omittedDepth += 1;
+      } else if (xmlLocalName(name) === "script" || xmlLocalName(name) === "style") {
+        text += omittedSeparator;
+        omittedDepth = 1;
+      } else {
+        text += tagSeparator;
+      }
+    },
+    ontext(value) {
+      if (omittedDepth === 0) text += value;
+    },
+    onclosetag() {
+      if (omittedDepth > 0) {
+        omittedDepth -= 1;
+        if (omittedDepth === 0) text += omittedSeparator;
+      } else {
+        text += tagSeparator;
+      }
+    },
+  }, { decodeEntities: true, xmlMode: true });
+  parser.end(xml);
+  return text;
+}
+
+function decodedXmlValue(value: string): string {
+  return parsedXmlText(`<openwork-value>${value}</openwork-value>`, "");
 }
 
 function xmlText(xml: string): string {
-  return decodeXmlEntities(xml.replace(/<[^>]+>/g, " ")).replace(/\s+/g, " ").trim();
+  return parsedXmlText(xml, " ").replace(/\s+/g, " ").trim();
 }
 
 type XmlBlock = {
@@ -396,7 +433,7 @@ function xmlAttributes(source: string): Record<string, string> {
   while ((match = regex.exec(source))) {
     const name = match[1];
     const value = match[2] ?? match[3] ?? "";
-    attributes[name] = decodeXmlEntities(value);
+    attributes[name] = decodedXmlValue(value);
   }
   return attributes;
 }
@@ -424,7 +461,7 @@ function xmlStartTagAttributes(xml: string, name: string): Array<Record<string, 
 function firstXmlText(xml: string, name: string): string | undefined {
   const block = xmlBlocks(xml, name)[0];
   if (!block) return undefined;
-  return decodeXmlEntities(block.inner.replace(/<[^>]+>/g, "")).trim();
+  return parsedXmlText(block.inner, "").trim();
 }
 
 function zipEntryMap(entries: ZipEntry[]): Map<string, ZipEntry> {
@@ -435,7 +472,10 @@ function zipEntryMap(entries: ZipEntry[]): Map<string, ZipEntry> {
 
 function readZipTextEntry(bytes: Buffer, entries: Map<string, ZipEntry>, name: string): string | null {
   const entry = entries.get(name);
-  return entry ? readZipEntryData(bytes, entry).toString("utf8") : null;
+  if (!entry) return null;
+  const xml = readZipEntryData(bytes, entry).toString("utf8");
+  assertSafeOfficeXml(xml);
+  return xml;
 }
 
 function normalizedZipPath(...segments: string[]): string {
@@ -477,7 +517,7 @@ function parseWorkbookSheets(workbookXml: string, relsXml: string | null): XlsxS
 }
 
 function sharedStringText(xml: string): string {
-  const pieces = xmlBlocks(xml, "t").map((block) => decodeXmlEntities(block.inner.replace(/<[^>]+>/g, "")));
+  const pieces = xmlBlocks(xml, "t").map((block) => parsedXmlText(block.inner, ""));
   const text = pieces.join("").replace(/\s+/g, " ").trim();
   return text || xmlText(xml);
 }

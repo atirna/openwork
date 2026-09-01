@@ -156,7 +156,7 @@ export async function mapRouteWorkspaceLoads<T, R>(
  * the routed workspace left every other workspace's sidebar showing the
  * "No tasks yet." empty state on launch even when it had sessions, because
  * nothing else ever fetched their session lists. Session-list loads are
- * read-only `listSessions` calls, so this does not interact with the
+ * read-only native `session.list` calls, so this does not interact with the
  * workspace-activation serialization from the switching-coherence fix.
  */
 export function planRouteWorkspaceLoads(

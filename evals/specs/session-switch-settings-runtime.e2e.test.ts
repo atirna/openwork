@@ -180,8 +180,8 @@ test.skipIf(!e2eTestsEnabled)(title, { timeout: 12 * 60_000 }, async ({ evidence
     };
     const [workspaces, firstSessions, secondSessions, config] = await Promise.all([
       readJson("/workspaces"),
-      readJson("/workspace/" + encodeURIComponent(firstWorkspaceId) + "/sessions?limit=200"),
-      readJson("/workspace/" + encodeURIComponent(workspaceId) + "/sessions?limit=200"),
+      readJson("/workspace/" + encodeURIComponent(firstWorkspaceId) + "/opencode/session?limit=200"),
+      readJson("/workspace/" + encodeURIComponent(workspaceId) + "/opencode/session?limit=200"),
       readJson("/workspace/" + encodeURIComponent(workspaceId) + "/config"),
     ]);
     const workspaceItems = Array.isArray(workspaces?.body?.items) ? workspaces.body.items : [];

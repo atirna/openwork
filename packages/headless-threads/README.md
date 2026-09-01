@@ -8,8 +8,8 @@ final state the desktop UI shows. A thread this package creates can be opened
 in the app afterwards, because there is no separate headless thread type.
 
 This is a client, not a runtime. It adds no chat engine, no session store, no
-model gateway, and no new server route — it is a typed shape over session
-surfaces the OpenWork server already serves.
+model gateway, and no new server route — it is a typed workflow over the
+official OpenCode SDK through OpenWork's workspace-scoped proxy.
 
 ## Why
 
@@ -64,6 +64,12 @@ if (waited.outcome === "settled") {
 shows this conversation in the sidebar.
 
 ## Contract
+
+`AgentSessionClient` is the intentionally small replaceable runtime port:
+create a thread, send a turn, read a snapshot, and abort. `HeadlessThreadClient`
+extends it with polling and transcript helpers. OpenCode is currently the only
+implementation; UI inventory and cross-workspace plugin routing stay on the
+native protocol instead of expanding this port speculatively.
 
 | Function | Does |
 | --- | --- |

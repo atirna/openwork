@@ -4,6 +4,8 @@ export const OPENWORK_WEB_UNIT_AMOUNT = 5000;
 export const OPENWORK_WEB_CURRENCY = "usd";
 export const OPENWORK_WEB_INTERVAL = "month";
 
+export type OpenWorkWebAccessSource = "subscription" | "complimentary" | null;
+
 export type StripeWebSubscription = {
   status: string;
   quantity: number;
@@ -23,6 +25,9 @@ export type StripeWebBilling = {
   quantity: number;
   expectedMonthlyTotal: number;
   hasEligibleSubscription: boolean;
+  hasAccess: boolean;
+  accessSource: OpenWorkWebAccessSource;
+  complimentaryAccess: boolean;
   subscription: StripeWebSubscription | null;
 };
 
@@ -63,6 +68,11 @@ export function parseStripeWebBilling(payload: unknown): StripeWebBilling | null
 
   const value = payload.billing.stripe.web;
   const subscription = parseSubscription(value.subscription);
+  const accessSource: OpenWorkWebAccessSource | undefined = value.accessSource === "subscription" || value.accessSource === "complimentary"
+    ? value.accessSource
+    : value.accessSource === null
+      ? null
+      : undefined;
   if (
     typeof value.configured !== "boolean" ||
     (value.priceId !== undefined && value.priceId !== null && typeof value.priceId !== "string") ||
@@ -76,6 +86,13 @@ export function parseStripeWebBilling(payload: unknown): StripeWebBilling | null
     typeof value.expectedMonthlyTotal !== "number" ||
     value.expectedMonthlyTotal !== value.quantity * OPENWORK_WEB_UNIT_AMOUNT ||
     typeof value.hasEligibleSubscription !== "boolean" ||
+    typeof value.hasAccess !== "boolean" ||
+    accessSource === undefined ||
+    typeof value.complimentaryAccess !== "boolean" ||
+    value.hasAccess !== (accessSource !== null) ||
+    (accessSource === "subscription" && value.hasEligibleSubscription !== true) ||
+    (value.hasAccess && value.hasEligibleSubscription && accessSource !== "subscription") ||
+    (accessSource === "complimentary" && value.complimentaryAccess !== true) ||
     subscription === undefined
   ) {
     return null;
@@ -91,6 +108,9 @@ export function parseStripeWebBilling(payload: unknown): StripeWebBilling | null
     quantity: value.quantity,
     expectedMonthlyTotal: value.expectedMonthlyTotal,
     hasEligibleSubscription: value.hasEligibleSubscription,
+    hasAccess: value.hasAccess,
+    accessSource,
+    complimentaryAccess: value.complimentaryAccess,
     subscription,
   };
 }

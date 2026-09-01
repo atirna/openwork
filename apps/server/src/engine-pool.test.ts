@@ -4,6 +4,7 @@ import { join } from "node:path";
 import { afterEach, describe, expect, test } from "bun:test";
 
 import {
+  BoundedSseFrameBuffer,
   clearEnginePoolForConfig,
   EnginePool,
   computeEngineConfigFingerprint,
@@ -67,6 +68,24 @@ async function writeFakeEngineBin(root: string): Promise<string> {
     "    return value[directory ?? ''] ?? [];",
     "  } catch { return []; }",
     "};",
+    "const eventSessions = (port) => {",
+    "  try {",
+    "    const state = JSON.parse(readFileSync(statePath, 'utf8'));",
+    "    const events = state.__events;",
+    "    if (!events || typeof events !== 'object') return null;",
+    "    const value = events[String(port)];",
+    "    return Array.isArray(value) ? value : null;",
+    "  } catch { return null; }",
+    "};",
+    "const eventMode = (port) => {",
+    "  try {",
+    "    const state = JSON.parse(readFileSync(statePath, 'utf8'));",
+    "    const modes = state.__eventMode;",
+    "    if (!modes || typeof modes !== 'object') return null;",
+    "    const value = modes[String(port)];",
+    "    return typeof value === 'string' ? value : null;",
+    "  } catch { return null; }",
+    "};",
     "const server = Bun.serve({",
     "  hostname: '127.0.0.1',",
     "  port: requestedPort,",
@@ -83,14 +102,47 @@ async function writeFakeEngineBin(root: string): Promise<string> {
     "      const sessionID = url.searchParams.get('session') ?? busySessions(server.port, url.searchParams.get('directory'))[0] ?? `ses_${server.port}`;",
     "      return Response.json([{ id: url.searchParams.get('request') ?? `req_${server.port}`, sessionID }]);",
     "    }",
-    "    if (url.pathname === '/event') {",
-    "      const sessionID = busySessions(server.port, url.searchParams.get('directory'))[0] ?? `ses_${server.port}`;",
-    "      const payload = { type: 'session.updated', properties: { sessionID } };",
-    "      if (url.searchParams.has('hold')) {",
-    "        const body = new ReadableStream({ start(controller) { controller.enqueue(new TextEncoder().encode(`data: ${JSON.stringify(payload)}\\n\\n`)); } });",
+    "    if (url.pathname === '/event' || url.pathname === '/global/event') {",
+    "      const mode = eventMode(server.port);",
+    "      // stall: accept the socket but never answer with headers.",
+    "      if (mode === 'stall') return new Promise(() => {});",
+    "      // giant: one unterminated frame far above the cap on a stream that never closes.",
+    "      if (mode === 'giant') {",
+    "        const body = new ReadableStream({",
+    "          start(controller) {",
+    "            const chunk = new TextEncoder().encode('data: ' + 'x'.repeat(1024 * 1024));",
+    "            for (let i = 0; i < 6; i += 1) controller.enqueue(chunk);",
+    "          },",
+    "        });",
     "        return new Response(body, { headers: { 'content-type': 'text/event-stream' } });",
     "      }",
-    "      return new Response(`data: ${JSON.stringify(payload)}\\n\\n`, { headers: { 'content-type': 'text/event-stream' } });",
+    "    }",
+    "    if (url.pathname === '/global/event') {",
+    "      const frame = (id) => `data: ${JSON.stringify({ directory: '/workspace', payload: { type: 'session.updated', properties: { sessionID: id } } })}\\n\\n`;",
+    "      if (eventSessions(server.port) !== null) {",
+    "        // Test-controlled live bus: emit an event per configured session",
+    "        // every 50ms on a held stream, re-reading state between beats.",
+    "        let timer = null;",
+    "        const body = new ReadableStream({",
+    "          start(controller) {",
+    "            timer = setInterval(() => {",
+    "              for (const id of eventSessions(server.port) ?? []) controller.enqueue(new TextEncoder().encode(frame(id)));",
+    "            }, 50);",
+    "          },",
+    "          cancel() { if (timer) clearInterval(timer); },",
+    "        });",
+    "        return new Response(body, { headers: { 'content-type': 'text/event-stream' } });",
+    "      }",
+    "      return new Response(frame(`ses_${server.port}`), { headers: { 'content-type': 'text/event-stream' } });",
+    "    }",
+    "    if (url.pathname === '/event') {",
+    "      const frame = (id) => `data: ${JSON.stringify({ type: 'session.updated', properties: { sessionID: id } })}\\n\\n`;",
+    "      const sessionID = busySessions(server.port, url.searchParams.get('directory'))[0] ?? `ses_${server.port}`;",
+    "      if (url.searchParams.has('hold')) {",
+    "        const body = new ReadableStream({ start(controller) { controller.enqueue(new TextEncoder().encode(frame(sessionID))); } });",
+    "        return new Response(body, { headers: { 'content-type': 'text/event-stream' } });",
+    "      }",
+    "      return new Response(frame(sessionID), { headers: { 'content-type': 'text/event-stream' } });",
     "    }",
     "    if (url.pathname.endsWith('/reply')) {",
     "      const owner = Number(url.searchParams.get('owner') ?? 0);",
@@ -129,6 +181,8 @@ type Fixture = {
   hooks: EnginePoolHooks;
   setBusy: (port: number, sessionIds: string[]) => Promise<void>;
   setBusyForDirectory: (port: number, directory: string, sessionIds: string[]) => Promise<void>;
+  setEventSessions: (port: number, sessionIds: string[] | null) => Promise<void>;
+  setEventMode: (port: number, mode: "stall" | "giant" | null) => Promise<void>;
   logLines: () => Promise<string[]>;
   setRuntimeConfig: (content: string) => Promise<void>;
   spawnPrimary: () => Promise<ManagedOpencodeServer>;
@@ -227,6 +281,43 @@ async function createFixture(options?: { bin?: "ready" | "unready" }): Promise<F
     await writeFile(statePath, JSON.stringify(state));
   };
 
+  /**
+   * Configure which sessions the fake engine's event bus reports as active.
+   * An array (even empty) switches that engine to a held live stream; null
+   * restores the legacy single-shot event body.
+   */
+  const setEventSessions = async (port: number, sessionIds: string[] | null): Promise<void> => {
+    const state = JSON.parse(await readFile(statePath, "utf8").catch(() => "{}")) as Record<string, string[] | Record<string, string[]>>;
+    const current = state.__events;
+    const events = current !== undefined && !Array.isArray(current) ? current : {};
+    if (sessionIds === null) delete events[String(port)];
+    else events[String(port)] = sessionIds;
+    if (Object.keys(events).length === 0) delete state.__events;
+    else state.__events = events;
+    await writeFile(statePath, JSON.stringify(state));
+  };
+
+  /**
+   * Force a misbehaving event endpoint on one engine: "stall" accepts the
+   * socket but never returns headers; "giant" streams one unterminated frame
+   * far above the frame cap; null restores normal behavior.
+   */
+  const setEventMode = async (port: number, mode: "stall" | "giant" | null): Promise<void> => {
+    const state = JSON.parse(await readFile(statePath, "utf8").catch(() => "{}")) as Record<string, unknown>;
+    const current = state.__eventMode;
+    const modes: Record<string, string> = {};
+    if (current !== undefined && typeof current === "object" && current !== null && !Array.isArray(current)) {
+      for (const [key, value] of Object.entries(current)) {
+        if (typeof value === "string") modes[key] = value;
+      }
+    }
+    if (mode === null) delete modes[String(port)];
+    else modes[String(port)] = mode;
+    if (Object.keys(modes).length === 0) delete state.__eventMode;
+    else state.__eventMode = modes;
+    await writeFile(statePath, JSON.stringify(state));
+  };
+
   const spawnPrimary = async (): Promise<ManagedOpencodeServer> => {
     const handle = await createManagedOpencodeServer({ bin, cwd: root, env: template.env });
     cleanups.push(() => handle.close().catch(() => undefined));
@@ -244,6 +335,8 @@ async function createFixture(options?: { bin?: "ready" | "unready" }): Promise<F
     hooks,
     setBusy,
     setBusyForDirectory,
+    setEventSessions,
+    setEventMode,
     logLines: async () => (await readFile(logPath, "utf8").catch(() => "")).split("\n").filter(Boolean),
     setRuntimeConfig: (content: string) => writeFile(runtimeConfigPath, content),
     spawnPrimary,
@@ -693,14 +786,16 @@ describe("engine pool", () => {
     expect(closed).toBe(true);
   });
 
-  test("aborts the remaining sessions once the drain grace period expires", async () => {
+  test("aborts the remaining sessions once the drain inactivity grace period expires", async () => {
     setEnv("OPENWORK_ENGINE_DRAIN_TIMEOUT_MS", "300");
     setEnv("OPENWORK_ENGINE_ABORT_SETTLE_MS", "100");
     const fixture = await createFixture();
     const { pool, primary } = await createPool(fixture);
     const oldPort = portOf(primary.url);
-    // This session never finishes, so only the grace timeout can end the drain.
+    // This session reports busy forever but never emits an event, so only the
+    // inactivity grace timeout can end the drain.
     await fixture.setBusy(oldPort, ["ses_stuck"]);
+    await fixture.setEventSessions(oldPort, []);
     await fixture.setRuntimeConfig(JSON.stringify({ generation: 2 }));
 
     expect((await pool.requestRollover({ reason: "config_changed", workspace: fixture.workspace })).action)
@@ -711,6 +806,48 @@ describe("engine pool", () => {
     const lines = await fixture.logLines();
     expect(lines).toContain(`${oldPort} POST /session/ses_stuck/abort`);
     expect(lines).toContain(`${oldPort} SIGTERM`);
+  });
+
+  test("uses one global activity stream across many workspaces and never aborts an active session", async () => {
+    setEnv("OPENWORK_ENGINE_DRAIN_TIMEOUT_MS", "300");
+    setEnv("OPENWORK_ENGINE_ABORT_SETTLE_MS", "100");
+    const fixture = await createFixture();
+    for (let index = 1; index < 32; index += 1) {
+      fixture.config.workspaces.push({
+        ...fixture.workspace,
+        id: `ws_pool_${index}`,
+        name: `Pool workspace ${index}`,
+        path: join(fixture.root, `workspace-${index}`),
+      });
+    }
+    const { pool, primary } = await createPool(fixture);
+    const oldPort = portOf(primary.url);
+    // The run keeps streaming: the engine event bus names it continuously.
+    await fixture.setBusy(oldPort, ["ses_streaming"]);
+    await fixture.setEventSessions(oldPort, ["ses_streaming"]);
+    await fixture.setRuntimeConfig(JSON.stringify({ generation: 2 }));
+
+    expect((await pool.requestRollover({ reason: "config_changed", workspace: fixture.workspace })).action)
+      .toBe("rolled_over");
+    expect(await waitUntil(async () => (await fixture.logLines()).includes(`${oldPort} GET /global/event`), 2_000))
+      .toBe(true);
+
+    // Wait out four full grace periods: an actively working session must
+    // never be aborted, so the draining engine stays alive the whole time.
+    await new Promise((resolve) => setTimeout(resolve, 1_200));
+    expect(primary.isAlive()).toBe(true);
+    const activeLines = await fixture.logLines();
+    expect(activeLines.filter((line) => line === `${oldPort} GET /global/event`)).toHaveLength(1);
+    expect(activeLines.some((line) => line === `${oldPort} GET /event`)).toBe(false);
+    expect(activeLines.some((line) => line.includes("/abort"))).toBe(false);
+
+    // The run finishes: the engine idles and the drained generation closes
+    // without ever aborting anything.
+    await fixture.setEventSessions(oldPort, []);
+    await fixture.setBusy(oldPort, []);
+    expect(await waitUntil(() => !primary.isAlive(), 5_000)).toBe(true);
+    expect((await fixture.logLines()).some((line) => line.includes("/abort"))).toBe(false);
+    expect(await fixture.logLines()).toContain(`${oldPort} SIGTERM`);
   });
 
   test("never runs more than one primary and one draining engine", async () => {
@@ -766,5 +903,119 @@ describe("engine pool", () => {
     const lines = await fixture.logLines();
     expect(lines).toContain(`${portOf(primary.url)} SIGTERM`);
     expect(lines).toContain(`${portOf(replacementUrl ?? "http://127.0.0.1:0")} SIGTERM`);
+  });
+});
+
+describe("BoundedSseFrameBuffer", () => {
+  const encoder = new TextEncoder();
+
+  test("splits frames across chunk boundaries and both delimiter styles", () => {
+    const buffer = new BoundedSseFrameBuffer(64);
+    expect(buffer.push(encoder.encode("data: one\n\ndata: tw"))).toEqual({ frames: ["data: one"], overflow: false });
+    expect(buffer.push(encoder.encode("o\r\n\r\ndata: three"))).toEqual({ frames: ["data: two"], overflow: false });
+    expect(buffer.push(encoder.encode("\n\n"))).toEqual({ frames: ["data: three"], overflow: false });
+  });
+
+  test("keeps completed frames and flags overflow once the unterminated remainder exceeds the cap", () => {
+    const buffer = new BoundedSseFrameBuffer(8);
+    expect(buffer.push(encoder.encode("data: a\n\n0123456789"))).toEqual({ frames: ["data: a"], overflow: true });
+  });
+
+  test("never overflows while frames keep terminating", () => {
+    const buffer = new BoundedSseFrameBuffer(16);
+    for (let index = 0; index < 100; index += 1) {
+      expect(buffer.push(encoder.encode("data: abcdefgh\n\n"))).toEqual({ frames: ["data: abcdefgh"], overflow: false });
+    }
+  });
+});
+
+describe("engine event stream bounds", () => {
+  const proxyEvent = async (fixture: Fixture, path: string): Promise<Response> => {
+    const url = new URL(`http://127.0.0.1/opencode${path}`);
+    return proxyOpencodeRequest({
+      config: fixture.config,
+      request: new Request(url),
+      url,
+      workspace: fixture.workspace,
+      proxyPath: url.pathname.slice("/opencode".length),
+    });
+  };
+
+  test("a sibling that never returns headers does not stall the client event stream", async () => {
+    setEnv("OPENWORK_ENGINE_EVENT_ESTABLISH_TIMEOUT_MS", "300");
+    const fixture = await createFixture();
+    const { pool, primary } = await createPool(fixture);
+    const oldPort = portOf(primary.url);
+    await fixture.setBusy(oldPort, ["ses_live"]);
+    await fixture.setRuntimeConfig(JSON.stringify({ generation: 2 }));
+    expect((await pool.requestRollover({ reason: "config_changed", workspace: fixture.workspace })).action)
+      .toBe("rolled_over");
+    const newPort = portOf(pool.primaryUrl() ?? "http://127.0.0.1:0");
+    // The draining sibling accepts the socket but never answers with headers.
+    await fixture.setEventMode(oldPort, "stall");
+
+    const startedAt = Date.now();
+    const response = await proxyEvent(fixture, "/event");
+    const events = await response.text();
+
+    expect(response.status).toBe(200);
+    expect(Date.now() - startedAt).toBeLessThan(2_000);
+    expect(events).toContain(`"sessionID":"ses_${newPort}"`);
+  });
+
+  test("a quiet live event stream stays open past the establishment deadline", async () => {
+    setEnv("OPENWORK_ENGINE_EVENT_ESTABLISH_TIMEOUT_MS", "300");
+    const fixture = await createFixture();
+    await createPool(fixture);
+
+    // hold=1 sends one frame and then goes silent on an open stream.
+    const response = await proxyEvent(fixture, "/event?hold=1");
+    expect(response.status).toBe(200);
+    if (!response.body) throw new Error("expected a streaming body");
+    const reader = response.body.getReader();
+    const first = await reader.read();
+    expect(first.done).toBe(false);
+
+    // The establishment deadline is long past; only establishment is bounded,
+    // so the silent-but-live body must still be open.
+    const idle = await Promise.race([
+      reader.read().then((chunk) => (chunk.done ? "closed" : "data")),
+      new Promise<string>((resolve) => setTimeout(() => resolve("open"), 1_200)),
+    ]);
+    expect(idle).toBe("open");
+    await reader.cancel().catch(() => undefined);
+  });
+
+  test("closes an event connection whose frame never terminates instead of buffering it", async () => {
+    const fixture = await createFixture();
+    const { primary } = await createPool(fixture);
+    await fixture.setEventMode(portOf(primary.url), "giant");
+
+    const response = await proxyEvent(fixture, "/event");
+    expect(response.status).toBe(200);
+    // The runaway frame hits the cap: the connection is dropped and the
+    // merged stream closes instead of buffering the frame forever.
+    const events = await response.text();
+    expect(events).toBe("");
+  });
+
+  test("the drain activity watch drops a runaway frame stream and reconnects", async () => {
+    setEnv("OPENWORK_ENGINE_DRAIN_ACTIVITY_RECONNECT_MS", "100");
+    const fixture = await createFixture();
+    const { pool, primary } = await createPool(fixture);
+    const oldPort = portOf(primary.url);
+    await fixture.setBusy(oldPort, ["ses_stuck"]);
+    await fixture.setEventMode(oldPort, "giant");
+    await fixture.setRuntimeConfig(JSON.stringify({ generation: 2 }));
+    expect((await pool.requestRollover({ reason: "config_changed", workspace: fixture.workspace })).action)
+      .toBe("rolled_over");
+
+    // Every malformed stream is dropped at the frame cap and re-dialed;
+    // without the bound the first connection would buffer forever and a
+    // second dial would never happen.
+    expect(await waitUntil(async () => {
+      const lines = await fixture.logLines();
+      return lines.filter((line) => line === `${oldPort} GET /global/event`).length >= 2;
+    }, 10_000)).toBe(true);
   });
 });

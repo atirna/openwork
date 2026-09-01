@@ -72,6 +72,7 @@ export const connectorSyncStatusSchema = z.enum(connectorSyncStatusValues)
 export const connectorSyncEventTypeSchema = z.enum(connectorSyncEventTypeValues)
 export const githubWebhookEventSchema = z.enum(githubWebhookEventValues)
 export const extensionSourceFormatSchema = z.enum([
+  "agent-plugin",
   "openwork-builtin",
   "openwork-extension-manifest",
   "claude-plugin",
@@ -666,6 +667,8 @@ export const pluginSchema = z.object({
   name: z.string().trim().min(1).max(255),
   description: nullableStringSchema,
   sourceRepositoryUrl: z.string().trim().min(1).max(1024).nullable(),
+  sourceFormat: extensionSourceFormatSchema.nullable(),
+  sourceSchemaVersion: z.string().trim().min(1).max(100).nullable(),
   status: pluginStatusSchema,
   createdByOrgMembershipId: memberIdSchema,
   createdAt: z.string().datetime({ offset: true }),
@@ -973,7 +976,8 @@ const githubPluginMcpImportServerSchema = z.object({
   pluginKey: z.string(),
   pluginName: z.string(),
   serverKey: z.string(),
-  skippedReason: z.enum(["missing_url", "local_unsupported", "invalid_url", "unsupported_auth"]).nullable(),
+  skippedReason: z.enum(["headers_unsupported", "invalid_config", "invalid_url", "local_unsupported", "missing_url", "unsupported_auth"]).nullable(),
+  sourceSchemaVersion: z.string().nullable(),
   sourcePath: z.string(),
   supported: z.boolean(),
   url: z.string().nullable(),
@@ -981,7 +985,7 @@ const githubPluginMcpImportServerSchema = z.object({
 
 const githubPluginMcpImportPlanSchema = z.object({
   branch: z.string(),
-  classification: z.enum(["claude_marketplace_repo", "claude_multi_plugin_repo", "claude_single_plugin_repo", "folder_inferred_repo", "unsupported"]),
+  classification: z.enum(["agent_plugin_repo", "claude_marketplace_repo", "claude_multi_plugin_repo", "claude_single_plugin_repo", "folder_inferred_repo", "unsupported"]),
   marketplace: z.object({
     description: z.string().nullable(),
     name: z.string().nullable(),
@@ -1005,9 +1009,11 @@ const githubPluginMcpImportPlanSchema = z.object({
     pluginName: z.string(),
     skillKey: z.string(),
     skippedReason: z.enum(["invalid_skill"]).nullable(),
+    sourceSchemaVersion: z.string().nullable(),
     sourcePath: z.string(),
     supported: z.boolean(),
   })),
+  sourceSchemaVersion: z.string().nullable(),
   sourceRevisionRef: z.string(),
   warnings: z.array(z.string()),
 }).meta({ ref: "GithubPluginMcpImportPlan" })
@@ -1034,7 +1040,7 @@ export const githubPluginMcpImportResponseSchema = pluginArchMutationResponseSch
     plugin: pluginSchema,
     skipped: z.array(z.object({
       name: z.string(),
-      reason: z.enum(["missing_url", "local_unsupported", "invalid_url", "unsupported_auth"]),
+      reason: z.enum(["headers_unsupported", "invalid_config", "invalid_url", "local_unsupported", "missing_url", "unsupported_auth"]),
     })),
     skippedSkills: z.array(z.object({
       name: z.string(),
@@ -1135,7 +1141,7 @@ export const githubRepositorySchema = z.object({
   fullName: z.string().trim().min(1),
   defaultBranch: z.string().trim().min(1).nullable(),
   hasPluginManifest: z.boolean().optional(),
-  manifestKind: z.enum(["marketplace", "plugin"]).nullable().optional(),
+  manifestKind: z.enum(["agent-plugin", "marketplace", "plugin"]).nullable().optional(),
   marketplacePluginCount: z.number().int().nonnegative().nullable().optional(),
   private: z.boolean(),
 }).meta({ ref: "PluginArchGithubRepository" })
@@ -1152,7 +1158,8 @@ export const githubDiscoveryTreeSummarySchema = z.object({
 }).meta({ ref: "PluginArchGithubDiscoveryTreeSummary" })
 export const githubDiscoveredPluginSchema = z.object({
   key: z.string().trim().min(1),
-  sourceKind: z.enum(["marketplace_entry", "plugin_manifest", "standalone_claude", "folder_inference"]),
+  sourceKind: z.enum(["agent_plugin_manifest", "marketplace_entry", "plugin_manifest", "standalone_claude", "folder_inference"]),
+  sourceSchemaVersion: z.enum(["1.0.0", "1.1.0"]).nullable(),
   rootPath: z.string(),
   displayName: z.string().trim().min(1),
   description: nullableStringSchema,
@@ -1177,7 +1184,7 @@ export const githubConnectorDiscoveryResponseSchema = pluginArchMutationResponse
   "PluginArchGithubConnectorDiscoveryResponse",
   z.object({
     autoImportNewPlugins: z.boolean(),
-    classification: z.enum(["claude_marketplace_repo", "claude_multi_plugin_repo", "claude_single_plugin_repo", "folder_inferred_repo", "unsupported"]),
+    classification: z.enum(["agent_plugin_repo", "claude_marketplace_repo", "claude_multi_plugin_repo", "claude_single_plugin_repo", "folder_inferred_repo", "unsupported"]),
     connectorInstance: connectorInstanceSchema,
     connectorTarget: connectorTargetSchema,
     discoveredPlugins: z.array(githubDiscoveredPluginSchema),

@@ -19,6 +19,9 @@ function billingPayload() {
           quantity: 4,
           expectedMonthlyTotal: 20000,
           hasEligibleSubscription: true,
+          hasAccess: true,
+          accessSource: "subscription",
+          complimentaryAccess: false,
           subscription: {
             status: "active",
             quantity: 4,
@@ -45,6 +48,9 @@ describe("OpenWork Web billing data", () => {
       quantity: 4,
       expectedMonthlyTotal: 20000,
       hasEligibleSubscription: true,
+      hasAccess: true,
+      accessSource: "subscription",
+      complimentaryAccess: false,
       subscription: {
         status: "active",
         quantity: 4,
@@ -74,14 +80,40 @@ describe("OpenWork Web billing data", () => {
     expect(parseStripeWebBilling(missingPaymentStatus)).toBeNull();
   });
 
+  test("parses complimentary access without pretending a Stripe subscription exists", () => {
+    const paid = billingPayload();
+    const complimentary = {
+      billing: {
+        stripe: {
+          web: {
+            ...paid.billing.stripe.web,
+            hasEligibleSubscription: false,
+            hasAccess: true,
+            accessSource: "complimentary",
+            complimentaryAccess: true,
+            subscription: null,
+          },
+        },
+      },
+    };
+
+    expect(parseStripeWebBilling(complimentary)).toMatchObject({
+      hasEligibleSubscription: false,
+      hasAccess: true,
+      accessSource: "complimentary",
+      complimentaryAccess: true,
+      subscription: null,
+    });
+  });
+
   test("billing presents plan, quantity definition, unit-total math, lifecycle, and management", () => {
     const source = readFileSync(new URL("../app/(den)/dashboard/_components/billing-dashboard-screen.tsx", import.meta.url), "utf8");
 
     expect(OPENWORK_WEB_QUANTITY_EXPLANATION).toContain("Pending invitations are not billed");
     expect(source).toContain('data-testid="billing-openwork-web-card"');
     expect(source).toContain('label="Plan" value="OpenWork Web"');
-    expect(source).toContain('label="Unit price"');
-    expect(source).toContain('label="Members billed"');
+    expect(source).toContain('label={webComplimentary ? "Access" : "Unit price"}');
+    expect(source).toContain('label={webComplimentary ? "Members covered" : "Members billed"}');
     expect(source).toContain('label="Expected monthly total"');
     expect(source).toContain('data-testid="billing-openwork-web-lifecycle"');
     expect(source).toContain('label="Subscription status"');
@@ -96,5 +128,22 @@ describe("OpenWork Web billing data", () => {
     expect(source).not.toContain("orgContext?.capabilities.cloud");
     expect(source).toContain('description={webFeatureEnabled');
     expect(source).toContain("Team seats and built-in AI model access are separate purchases.");
+    expect(source).toContain('webAccessSource === "complimentary"');
+    expect(source).toContain("Members covered");
+    expect(source).toContain("without a Stripe subscription or per-member charge");
+  });
+
+  test("platform admin UI exposes an audited complimentary access action separate from capabilities", () => {
+    const source = readFileSync(new URL("../components/den-admin-panel.tsx", import.meta.url), "utf8");
+
+    expect(source).toContain('data-testid="admin-openwork-web-access"');
+    expect(source).toContain("OpenWork Web billing access");
+    expect(source).toContain("Grant complimentary access");
+    expect(source).toContain("Revoke complimentary access");
+    expect(source).toContain("Reason for audit log");
+    expect(source).toContain("Cancel or finish the paid subscription in Stripe");
+    expect(source).toContain("even when deployment-wide availability is off");
+    expect(source).not.toContain("grant is stored, but this deployment has not enabled");
+    expect(source).toContain("/openwork-web-access");
   });
 });

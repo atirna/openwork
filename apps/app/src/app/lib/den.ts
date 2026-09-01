@@ -279,6 +279,14 @@ export type DenCloudInstance = {
   imageVersion: string | null;
   instanceName?: string | null;
   latestVersion: string | null;
+  failure?: DenCloudStartupFailure;
+};
+
+export type DenCloudStartupFailure = {
+  code: string;
+  stage: "provisioning" | "recovery" | "runtime";
+  reference: string;
+  occurredAt: string;
 };
 
 export type DenCloudInstanceUpdateResult =
@@ -424,6 +432,13 @@ export type DenBillingSummary = {
   invoices: DenBillingInvoice[];
   productId: string | null;
   benefitId: string | null;
+};
+
+export type DenOpenWorkWebAccessSource = "subscription" | "complimentary" | null;
+
+export type DenOpenWorkWebAccess = {
+  hasAccess: boolean;
+  accessSource: DenOpenWorkWebAccessSource;
 };
 
 type DenAuthResult = {
@@ -1927,12 +1942,31 @@ function parseCloudInstance(payload: unknown): DenCloudInstance | null {
     return null;
   }
 
+  const failurePayload = isRecord(payload.failure) ? payload.failure : null;
+  const failureStage = failurePayload?.stage;
+  const failureCode = typeof failurePayload?.code === "string" ? failurePayload.code.trim() : "";
+  const failureReference = typeof failurePayload?.reference === "string" ? failurePayload.reference.trim() : "";
+  const failureOccurredAt = typeof failurePayload?.occurredAt === "string" ? failurePayload.occurredAt : "";
+  const failure: DenCloudStartupFailure | null = failurePayload
+    && failureCode
+    && (failureStage === "provisioning" || failureStage === "recovery" || failureStage === "runtime")
+    && failureReference
+    && Number.isFinite(Date.parse(failureOccurredAt))
+    ? {
+        code: failureCode,
+        stage: failureStage,
+        reference: failureReference,
+        occurredAt: failureOccurredAt,
+      }
+    : null;
+
   return {
     status: payload.status,
     url: payload.url,
     imageVersion: typeof payload.imageVersion === "string" ? payload.imageVersion : null,
     ...(typeof payload.instanceName === "string" ? { instanceName: payload.instanceName } : {}),
     latestVersion: typeof payload.latestVersion === "string" ? payload.latestVersion : null,
+    ...(failure ? { failure } : {}),
   };
 }
 
@@ -2201,6 +2235,7 @@ function parsePluginConfigObject(value: unknown): DenPluginConfigObject | null {
 
 function parseExtensionSourceFormat(value: unknown): OpenWorkExtensionSourceFormat | null {
   switch (value) {
+    case "agent-plugin":
     case "openwork-builtin":
     case "openwork-extension-manifest":
     case "claude-plugin":
@@ -2708,6 +2743,34 @@ function getBillingSummary(payload: unknown): DenBillingSummary | null {
   };
 }
 
+export function parseDenOpenWorkWebAccess(payload: unknown): DenOpenWorkWebAccess | null {
+  if (!isRecord(payload) || !isRecord(payload.billing)) return null;
+  const stripe = payload.billing.stripe;
+  if (!isRecord(stripe) || !isRecord(stripe.web)) return null;
+
+  const web = stripe.web;
+  const accessSource: DenOpenWorkWebAccessSource | undefined =
+    web.accessSource === "subscription" || web.accessSource === "complimentary"
+      ? web.accessSource
+      : web.accessSource === null
+        ? null
+        : undefined;
+  if (
+    typeof web.hasAccess !== "boolean"
+    || accessSource === undefined
+    || web.hasAccess !== (accessSource !== null)
+    || (accessSource === "subscription" && web.hasEligibleSubscription !== true)
+    || (accessSource === "complimentary" && web.complimentaryAccess !== true)
+  ) {
+    return null;
+  }
+
+  return {
+    hasAccess: web.hasAccess,
+    accessSource,
+  };
+}
+
 // Den requests target a control plane that does not answer CORS preflights.
 // On desktop, route cross-origin Den calls (including a Den API on a different
 // loopback port than the renderer) through the Electron main process so the
@@ -3064,6 +3127,61 @@ export function createDenClient(options: { baseUrl: string; apiBaseUrl?: string 
         throw new DenApiError(500, "invalid_cloud_instance_payload", "Cloud instance response was invalid.");
       }
       return instance;
+    },
+
+    async retryCloudInstance(orgId: string): Promise<DenCloudInstance> {
+      let payload: unknown;
+      try {
+        payload = await requestJson<unknown>(baseUrls, "/v1/cloud/instance/retry", {
+          method: "POST",
+          token,
+          organizationId: orgId,
+          body: {},
+        });
+      } catch (error) {
+        // Desktop releases can reach a Den that predates explicit recovery.
+        // Fall back to the established status request so the Retry action stays
+        // safe during staggered rollouts; newer Dens still bypass the cooldown.
+        if (!(error instanceof DenApiError) || error.status !== 404) throw error;
+        payload = await requestJson<unknown>(baseUrls, "/v1/cloud/instance", {
+          method: "GET",
+          token,
+          organizationId: orgId,
+        });
+      }
+      const instance = parseCloudInstance(payload);
+      if (!instance) {
+        throw new DenApiError(500, "invalid_cloud_instance_payload", "Cloud retry response was invalid.");
+      }
+      return instance;
+    },
+
+    async getOpenWorkWebAccess(orgId: string): Promise<DenOpenWorkWebAccess> {
+      const context = await requestJson<unknown>(baseUrls, "/v1/org", {
+        method: "GET",
+        token,
+        organizationId: orgId,
+      });
+      const capabilities = isRecord(context) && isRecord(context.capabilities)
+        ? context.capabilities
+        : null;
+      // Missing means unsupported. This follows the established Den capability
+      // negotiation pattern so a newer hosted client never calls the Web billing
+      // route on an older Den deployment that does not advertise the contract.
+      if (capabilities?.openworkWeb !== true) {
+        return { hasAccess: false, accessSource: null };
+      }
+
+      const payload = await requestJson<unknown>(baseUrls, "/v1/billing/web", {
+        method: "GET",
+        token,
+        organizationId: orgId,
+      });
+      const access = parseDenOpenWorkWebAccess(payload);
+      if (!access) {
+        throw new DenApiError(500, "invalid_openwork_web_access_payload", "OpenWork Web access response was invalid.");
+      }
+      return access;
     },
 
     async updateCloudInstance(orgId: string): Promise<DenCloudInstanceUpdateResult> {

@@ -348,11 +348,11 @@ test.skipIf(!e2eTestsEnabled || !localPlacement || !mysqlOpen)(title, { timeout:
     const sessionId = sessionIndex >= 0 ? decodeURIComponent(routeParts[sessionIndex + 1] || "") : "";
     const response = await fetch(
       "http://127.0.0.1:" + port + "/workspace/" + encodeURIComponent(${JSON.stringify(workspace.workspaceId)})
-        + "/sessions/" + encodeURIComponent(sessionId) + "/messages?limit=50",
+        + "/opencode/session/" + encodeURIComponent(sessionId) + "/message?limit=50",
       { headers: { Authorization: "Bearer " + token } },
     );
     const payload = await response.json();
-    for (const message of Array.isArray(payload?.items) ? payload.items : []) {
+    for (const message of Array.isArray(payload) ? payload : []) {
       for (const part of Array.isArray(message?.parts) ? message.parts : []) {
         if (typeof part?.tool === "string" && part.tool.endsWith("_create_skill")) {
           return { tool: part.tool, state: part.state };

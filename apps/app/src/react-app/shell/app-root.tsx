@@ -25,6 +25,7 @@ import {
 } from "../domains/connections/cloud-inventory-cache";
 import { ForcedSigninPage } from "../domains/cloud/forced-signin-page";
 import { EnterpriseActivationGate } from "../domains/cloud/enterprise-activation-gate";
+import { OpenWorkWebAccessGate } from "../domains/cloud/openwork-web-access-gate";
 import { OrgOnboardingPage } from "../domains/cloud/org-onboarding-page";
 import { NewProvidersListener } from "./new-providers-listener";
 import { useDesktopFontZoomBehavior } from "./font-zoom";
@@ -385,10 +386,11 @@ export function AppRoot() {
           <OpenworkContextPublisher />
           <DenAuthControlActions />
           <BrandThemeControlActions />
-          <CloudWorkspaceStatusProvider>
           <EnterpriseActivationGate>
-          <DenSigninGate>
-            <Routes>
+            <DenSigninGate>
+              <OpenWorkWebAccessGate>
+                <CloudWorkspaceStatusProvider>
+                  <Routes>
               <Route
                 path="/signin"
                 element={
@@ -498,12 +500,13 @@ export function AppRoot() {
                   settings deliberately via the sidebar or command palette. */}
               <Route path="/" element={<Navigate to="/session" replace />} />
               <Route path="*" element={<Navigate to="/session" replace />} />
-            </Routes>
-          </DenSigninGate>
-          <LoadingOverlay />
+                  </Routes>
+                  <LoadingOverlay />
+                  <CloudWorkspaceOverlay />
+                </CloudWorkspaceStatusProvider>
+              </OpenWorkWebAccessGate>
+            </DenSigninGate>
           </EnterpriseActivationGate>
-          <CloudWorkspaceOverlay />
-          </CloudWorkspaceStatusProvider>
         </OpenworkControlProvider>
         </AppMenuProvider>
         </ShellConfigProvider>

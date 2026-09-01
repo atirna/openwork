@@ -375,7 +375,7 @@ async function createFreshSession(appSurface: Surface, workspaceId: string): Pro
       if (!port || !token) return { error: "missing local server credentials" };
       let response;
       try {
-        response = await fetch("http://127.0.0.1:" + port + "/workspace/" + encodeURIComponent(${JSON.stringify(workspaceId)}) + "/sessions", {
+        response = await fetch("http://127.0.0.1:" + port + "/workspace/" + encodeURIComponent(${JSON.stringify(workspaceId)}) + "/opencode/session", {
           method: "POST",
           headers: { Authorization: "Bearer " + token, "Content-Type": "application/json" },
           body: JSON.stringify({ title: "Model analytics demo" }),
@@ -386,7 +386,7 @@ async function createFreshSession(appSurface: Surface, workspaceId: string): Pro
       const text = await response.text();
       let body = null;
       try { body = text ? JSON.parse(text) : null; } catch { body = null; }
-      return { status: response.status, sessionId: body?.item?.id ?? "", text: text.slice(0, 500) };
+      return { status: response.status, sessionId: body?.id ?? "", text: text.slice(0, 500) };
     })()`, { awaitPromise: true, timeoutMs: 10_000 });
     if (isRecord(result) && typeof result.sessionId === "string" && result.sessionId) {
       sessionId = result.sessionId;

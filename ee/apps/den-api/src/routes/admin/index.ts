@@ -25,6 +25,7 @@ import {
   TelemetryEventTable,
   WorkerTable,
   AdminAllowlistTable,
+  AuditEventTable,
 } from "@openwork-ee/den-db/schema"
 import { createDenTypeId, isDenTypeId } from "@openwork-ee/utils/typeid"
 import type { Hono } from "hono"
@@ -43,7 +44,10 @@ import { normalizeOrganizationCapabilities, readOrganizationCapabilityOverrides 
 import { DEFAULT_ORGANIZATION_LIMITS, normalizeOrganizationMetadata } from "../../organization-limits.js"
 import { env } from "../../env.js"
 import type { AuthContextVariables } from "../../session.js"
-import { calculateOrganizationSeatBillingCounts, getOrganizationSeatBillingCounts, refreshOrgSubscriptionFromStripe, syncSeatSubscriptionQuantityAfterMemberChange } from "../../stripe-billing.js"
+import { buildOrganizationAuditEvent, logOrganizationAuditEvent, ORGANIZATION_AUDIT_ACTIONS } from "../../audit-events.js"
+import { hasOpenWorkWebComplimentaryAccess, resolveOpenWorkWebAccess, setOpenWorkWebComplimentaryAccess } from "../../openwork-web-access.js"
+import { isOpenWorkWebAvailable } from "../../openwork-web-availability.js"
+import { calculateOrganizationSeatBillingCounts, getOrganizationSeatBillingCounts, isEligibleOpenWorkWebSubscriptionStatus, isOngoingOpenWorkWebSubscriptionStatus, organizationHasOngoingOpenWorkWebSubscription, refreshOrgSubscriptionFromStripe, syncSeatSubscriptionQuantityAfterMemberChange } from "../../stripe-billing.js"
 import { buildAdminPageInfo, normalizeAdminPageRequest, sanitizeAdminSearchForLike, type AdminPageRequest } from "./scale-performance.js"
 
 type UserId = typeof AuthUserTable.$inferSelect.id
@@ -83,6 +87,11 @@ const updateOrganizationPlanSchema = z.object({
 
 const updateOrganizationFreeSeatsSchema = z.object({
   totalFreeSeats: z.number().int().min(DEFAULT_ORGANIZATION_FREE_SEAT_COUNT).max(100000),
+})
+
+const updateOrganizationOpenWorkWebAccessSchema = z.object({
+  enabled: z.boolean(),
+  reason: z.string().trim().min(3).max(500),
 })
 
 const updateOrganizationCapabilitiesSchema = z.object({
@@ -282,6 +291,31 @@ function readAdminVisibleOrganizationCapabilities(metadata: Record<string, unkno
   }
 }
 
+function readAdminOpenWorkWebAccess(
+  metadata: Record<string, unknown> | string | null | undefined,
+  subscription: AdminOpenWorkWebSubscription | null,
+) {
+  const complimentaryAccess = hasOpenWorkWebComplimentaryAccess(metadata)
+  const hasEligibleSubscription = Boolean(
+    subscription
+    && isEligibleOpenWorkWebSubscriptionStatus(subscription.status)
+    && env.stripe.openworkWebPriceId
+    && subscription.stripe_price_id === env.stripe.openworkWebPriceId
+    && subscription.payment_failed !== true,
+  )
+  const access = resolveOpenWorkWebAccess({
+    deploymentAvailable: isOpenWorkWebAvailable(),
+    hasEligibleSubscription,
+    complimentaryAccess,
+  })
+  return {
+    ...access,
+    hasEligibleSubscription,
+    hasOngoingSubscription: Boolean(subscription && isOngoingOpenWorkWebSubscriptionStatus(subscription.status)),
+    subscriptionStatus: subscription?.status ?? null,
+  }
+}
+
 function readUnmanagedCapabilityMetadata(metadata: Record<string, unknown>): Record<string, unknown> {
   const raw = isRecord(metadata.capabilities) ? metadata.capabilities : {}
   const capabilities: Record<string, unknown> = {}
@@ -415,7 +449,15 @@ type AdminOrganizationRow = {
   seatsFreeAdditional: number
   billableSeatCount: number
   capabilities: ReturnType<typeof normalizeOrganizationCapabilities>
+  openworkWebAccess: AdminOpenWorkWebAccess
 }
+
+type AdminOpenWorkWebSubscription = Pick<
+  typeof OrgSubscriptionTable.$inferSelect,
+  "status" | "stripe_price_id" | "payment_failed"
+>
+
+type AdminOpenWorkWebAccess = ReturnType<typeof readAdminOpenWorkWebAccess>
 
 type AdminSummary = {
   totalUsers: number
@@ -884,15 +926,30 @@ async function shapeAdminOrganizationRows(rows: Array<Pick<typeof OrganizationTa
   }
 
   const organizationIds = rows.map((row) => row.id)
-  const memberRows = await db
-    .select({ organizationId: MemberTable.organizationId, memberCount: sql<number>`count(*)` })
-    .from(MemberTable)
-    .where(and(inArray(MemberTable.organizationId, organizationIds), isNull(MemberTable.removedAt)))
-    .groupBy(MemberTable.organizationId)
+  const [memberRows, webSubscriptionRows] = await Promise.all([
+    db
+      .select({ organizationId: MemberTable.organizationId, memberCount: sql<number>`count(*)` })
+      .from(MemberTable)
+      .where(and(inArray(MemberTable.organizationId, organizationIds), isNull(MemberTable.removedAt)))
+      .groupBy(MemberTable.organizationId),
+    db
+      .select({
+        organizationId: OrgSubscriptionTable.organization_id,
+        status: OrgSubscriptionTable.status,
+        stripe_price_id: OrgSubscriptionTable.stripe_price_id,
+        payment_failed: OrgSubscriptionTable.payment_failed,
+      })
+      .from(OrgSubscriptionTable)
+      .where(and(
+        inArray(OrgSubscriptionTable.organization_id, organizationIds),
+        eq(OrgSubscriptionTable.type, "web"),
+      )),
+  ])
   const memberCountByOrg = new Map<string, number>()
   for (const row of memberRows) {
     memberCountByOrg.set(row.organizationId, toNumber(row.memberCount))
   }
+  const webSubscriptionByOrg = new Map(webSubscriptionRows.map((row) => [row.organizationId, row]))
 
   return rows.map((entry) => {
     const metadata = normalizeOrganizationMetadata(entry.metadata).metadata
@@ -911,6 +968,7 @@ async function shapeAdminOrganizationRows(rows: Array<Pick<typeof OrganizationTa
       seatsFreeAdditional: seatCounts.additionalFree,
       billableSeatCount: seatCounts.chargeable,
       capabilities: readAdminVisibleOrganizationCapabilities(metadata),
+      openworkWebAccess: readAdminOpenWorkWebAccess(metadata, webSubscriptionByOrg.get(entry.id) ?? null),
     }
   })
 }
@@ -1606,6 +1664,102 @@ export function registerAdminRoutes<T extends { Variables: AuthContextVariables 
           freeSeatCount: seatCounts.free,
           seatsFreeAdditional: seatCounts.additionalFree,
           billableSeatCount: seatCounts.chargeable,
+        },
+      })
+    },
+  )
+
+  app.put(
+    "/v1/admin/organizations/:organizationId/openwork-web-access",
+    adminRoute(),
+    async (c) => {
+      const body = updateOrganizationOpenWorkWebAccessSchema.safeParse(await c.req.json().catch(() => null))
+      if (!body.success) {
+        return c.json({ error: "invalid_request", message: body.error.issues[0]?.message ?? "Invalid OpenWork Web access request." }, 400)
+      }
+
+      const organizationId = c.req.param("organizationId")
+      if (!isOrganizationId(organizationId)) {
+        return c.json({ error: "invalid_request", message: "Invalid organization id." }, 400)
+      }
+
+      if (body.data.enabled && await organizationHasOngoingOpenWorkWebSubscription(organizationId)) {
+        return c.json({
+          error: "openwork_web_subscription_exists",
+          message: "Cancel or finish the existing paid OpenWork Web subscription before granting complimentary access.",
+        }, 409)
+      }
+
+      const actorUserId = c.get("user").id
+      const result = await db.transaction(async (tx) => {
+        const organizations = await tx
+          .select({ id: OrganizationTable.id, metadata: OrganizationTable.metadata })
+          .from(OrganizationTable)
+          .where(eq(OrganizationTable.id, organizationId))
+          .limit(1)
+          .for("update")
+        const organization = organizations[0]
+        if (!organization) {
+          return "not_found"
+        }
+
+        const webSubscriptions = await tx
+          .select({
+            status: OrgSubscriptionTable.status,
+            stripe_price_id: OrgSubscriptionTable.stripe_price_id,
+            payment_failed: OrgSubscriptionTable.payment_failed,
+          })
+          .from(OrgSubscriptionTable)
+          .where(and(
+            eq(OrgSubscriptionTable.organization_id, organizationId),
+            eq(OrgSubscriptionTable.type, "web"),
+          ))
+          .limit(1)
+          .for("update")
+        const webSubscription = webSubscriptions[0] ?? null
+        if (body.data.enabled && webSubscription && isOngoingOpenWorkWebSubscriptionStatus(webSubscription.status)) {
+          return "subscription_exists"
+        }
+
+        const normalizedMetadata = normalizeOrganizationMetadata(organization.metadata).metadata
+        const metadata = setOpenWorkWebComplimentaryAccess(normalizedMetadata, body.data.enabled)
+        const auditEvent = buildOrganizationAuditEvent({
+          organizationId,
+          actorUserId,
+          action: body.data.enabled
+            ? ORGANIZATION_AUDIT_ACTIONS.openWorkWebComplimentaryAccessGranted
+            : ORGANIZATION_AUDIT_ACTIONS.openWorkWebComplimentaryAccessRevoked,
+          payload: {
+            reason: body.data.reason,
+            complimentaryAccess: body.data.enabled,
+          },
+        })
+
+        await tx
+          .update(OrganizationTable)
+          .set({ metadata })
+          .where(eq(OrganizationTable.id, organizationId))
+        await tx.insert(AuditEventTable).values(auditEvent)
+
+        return { metadata, webSubscription, auditEvent }
+      })
+
+      if (result === "not_found") {
+        return c.json({ error: "not_found", message: "Organization not found." }, 404)
+      }
+      if (result === "subscription_exists") {
+        return c.json({
+          error: "openwork_web_subscription_exists",
+          message: "Cancel or finish the existing paid OpenWork Web subscription before granting complimentary access.",
+        }, 409)
+      }
+
+      logOrganizationAuditEvent(result.auditEvent)
+      return c.json({
+        ok: true,
+        organization: {
+          id: organizationId,
+          openworkWebAccess: readAdminOpenWorkWebAccess(result.metadata, result.webSubscription),
         },
       })
     },

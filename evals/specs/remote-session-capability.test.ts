@@ -27,9 +27,8 @@ let executeRemoteSessionCapability: RemoteSessionModule["executeRemoteSessionCap
 let searchRemoteSessionCapabilities: RemoteSessionModule["searchRemoteSessionCapabilities"];
 
 /**
- * A witness openwork-server: the exact session routes the headless-threads
- * client speaks (`POST /workspace/:id/sessions`, `GET .../sessions/:id/messages`,
- * `GET .../sessions/:id/snapshot`, `POST .../opencode/session/:id/prompt_async`),
+ * A witness openwork-server: the exact native OpenCode routes the
+ * headless-threads client speaks through `/workspace/:id/opencode`,
  * recording every request so assertions observe the real wire traffic the
  * `remote-session:*` capabilities produce — not a stubbed client.
  */
@@ -91,12 +90,10 @@ function snapshotWire(session: WitnessSession) {
     },
   ]);
   return {
-    item: {
-      session: { id: session.id, title: session.title, directory: null, time: { created: 1 } },
-      messages,
-      todos: [],
-      status: { type: "idle" },
-    },
+    session: { id: session.id, title: session.title, directory: null, time: { created: 1 } },
+    messages,
+    todos: [],
+    status: { type: "idle" },
   };
 }
 
@@ -112,41 +109,46 @@ async function handle(request: IncomingMessage, response: ServerResponse) {
     body,
   });
 
-  const prefix = `/workspace/${WORKSPACE_ID}`;
-  if (method === "POST" && path === `${prefix}/sessions`) {
+  const prefix = `/workspace/${WORKSPACE_ID}/opencode/session`;
+  if (method === "POST" && path === prefix) {
     const title = typeof body === "object" && body !== null && typeof (body as Record<string, unknown>).title === "string"
       ? String((body as Record<string, unknown>).title)
       : "Untitled";
-    const prompt = typeof body === "object" && body !== null && typeof (body as Record<string, unknown>).prompt === "string"
-      ? String((body as Record<string, unknown>).prompt)
-      : undefined;
     const session: WitnessSession = {
       id: `ses_witness_${witness.nextSessionId++}`,
       title,
-      prompts: prompt === undefined ? [] : [prompt],
+      prompts: [],
     };
     witness.sessions.set(session.id, session);
-    return json(response, 200, {
-      item: { id: session.id, title: session.title, directory: null, time: { created: 1 } },
-      started: prompt !== undefined,
-    });
+    return json(response, 200, snapshotWire(session).session);
   }
 
-  const messagesMatch = path.match(new RegExp(`^${prefix}/sessions/([^/]+)/messages$`));
+  const messagesMatch = path.match(new RegExp(`^${prefix}/([^/]+)/message$`));
   if (method === "GET" && messagesMatch) {
     const session = witness.sessions.get(decodeURIComponent(messagesMatch[1] ?? ""));
     if (!session) return json(response, 404, { code: "not_found", message: "session not found" });
-    return json(response, 200, { items: snapshotWire(session).item.messages });
+    return json(response, 200, snapshotWire(session).messages);
   }
 
-  const snapshotMatch = path.match(new RegExp(`^${prefix}/sessions/([^/]+)/snapshot$`));
-  if (method === "GET" && snapshotMatch) {
-    const session = witness.sessions.get(decodeURIComponent(snapshotMatch[1] ?? ""));
+  if (method === "GET" && path === `${prefix}/status`) {
+    return json(response, 200, {});
+  }
+
+  const sessionMatch = path.match(new RegExp(`^${prefix}/([^/]+)$`));
+  if (method === "GET" && sessionMatch) {
+    const session = witness.sessions.get(decodeURIComponent(sessionMatch[1] ?? ""));
     if (!session) return json(response, 404, { code: "not_found", message: "session not found" });
-    return json(response, 200, snapshotWire(session));
+    return json(response, 200, snapshotWire(session).session);
   }
 
-  const promptMatch = path.match(new RegExp(`^${prefix}/opencode/session/([^/]+)/prompt_async$`));
+  const todoMatch = path.match(new RegExp(`^${prefix}/([^/]+)/todo$`));
+  if (method === "GET" && todoMatch) {
+    const session = witness.sessions.get(decodeURIComponent(todoMatch[1] ?? ""));
+    if (!session) return json(response, 404, { code: "not_found", message: "session not found" });
+    return json(response, 200, snapshotWire(session).todos);
+  }
+
+  const promptMatch = path.match(new RegExp(`^${prefix}/([^/]+)/prompt_async$`));
   if (method === "POST" && promptMatch) {
     const session = witness.sessions.get(decodeURIComponent(promptMatch[1] ?? ""));
     if (!session) return json(response, 404, { code: "not_found", message: "session not found" });
@@ -227,14 +229,14 @@ test("remote-session capabilities drive a real openwork-server wire with scoped 
   expect(createdBody.started).toBe(true);
 
   const createRequest = witness.requests.find(
-    (request) => request.method === "POST" && request.path === `/workspace/${WORKSPACE_ID}/sessions`,
+    (request) => request.method === "POST" && request.path === `/workspace/${WORKSPACE_ID}/opencode/session`,
   );
   expect(createRequest).toBeDefined();
   expect(createRequest?.authorization).toBe(`Bearer ${CLIENT_TOKEN}`);
   expect(createRequest?.hostToken).toBe(HOST_TOKEN);
   evidence.recordAssertionEvidence(
-    "Create reaches the worker session route with worker credentials",
-    "remote-session:create produced POST /workspace/:id/sessions on the witness with the collaborator bearer token and host token header, returning the native session id.",
+    "Create reaches the worker's native OpenCode route with worker credentials",
+    "remote-session:create produced POST /workspace/:id/opencode/session on the witness with the collaborator bearer token and host token header, returning the native session id.",
     true,
   );
 
@@ -244,7 +246,7 @@ test("remote-session capabilities drive a real openwork-server wire with scoped 
   );
   expect(sent.isError).toBeUndefined();
   expect(payload(sent).state).toBe("accepted");
-  const promptRequest = witness.requests.find(
+  const promptRequest = witness.requests.findLast(
     (request) => request.method === "POST" && request.path.includes("/prompt_async"),
   );
   expect(promptRequest).toBeDefined();
@@ -319,6 +321,24 @@ test("remote-session capabilities drive a real openwork-server wire with scoped 
   evidence.recordAssertionEvidence(
     "mcp:write gates mutations",
     "Without the write scope, create and send fail with insufficient_mcp_scope and no request reaches the worker; read remains available with read scope.",
+    true,
+  );
+});
+
+test("remote-session capability accepts a JSON-stringified body", async ({ evidence }) => {
+  const created = await executeRemoteSessionCapability(
+    input("create", JSON.stringify({ title: "Stringified handoff" })),
+    deps,
+  );
+
+  expect(created.isError).toBeUndefined();
+  expect(payload(created).sessionId).toMatch(/^ses_witness_/);
+  expect(witness.requests.findLast(
+    (request) => request.method === "POST" && request.path === `/workspace/${WORKSPACE_ID}/opencode/session`,
+  )?.body).toMatchObject({ title: "Stringified handoff" });
+  evidence.recordAssertionEvidence(
+    "JSON-stringified capability body is normalized",
+    "remote-session:create accepted a JSON-stringified body and passed its title to the native session route.",
     true,
   );
 });

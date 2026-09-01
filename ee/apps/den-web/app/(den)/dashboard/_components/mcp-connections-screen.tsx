@@ -161,7 +161,7 @@ async function copyTextToClipboard(text: string): Promise<boolean> {
   }
 }
 
-type GithubPluginImportSkippedReason = "missing_url" | "local_unsupported" | "invalid_url" | "unsupported_auth";
+type GithubPluginImportSkippedReason = "headers_unsupported" | "invalid_config" | "invalid_url" | "local_unsupported" | "missing_url" | "unsupported_auth";
 
 type GithubPluginImportServer = {
   name: string;
@@ -195,7 +195,7 @@ function asString(value: unknown): string | null {
 }
 
 function parseSkippedReason(value: unknown): GithubPluginImportSkippedReason | null {
-  if (value === "missing_url" || value === "local_unsupported" || value === "invalid_url" || value === "unsupported_auth") {
+  if (value === "headers_unsupported" || value === "invalid_config" || value === "invalid_url" || value === "local_unsupported" || value === "missing_url" || value === "unsupported_auth") {
     return value;
   }
   return null;
@@ -244,6 +244,9 @@ function parseGithubPluginImportPreview(payload: unknown): GithubPluginImportPre
 function importServerStatus(server: GithubPluginImportServer): string {
   if (server.supported) return "ready";
   if (server.skippedReason === "missing_url") return "missing URL";
+  if (server.skippedReason === "local_unsupported") return "desktop-only";
+  if (server.skippedReason === "headers_unsupported") return "static headers unsupported";
+  if (server.skippedReason === "invalid_config") return "invalid config";
   return "unsupported";
 }
 

@@ -391,18 +391,23 @@ async function readSessionFacts(desktopApp: App, workspaceId: string, sessionId:
   const value = await evalIn(desktopApp, `(async () => {
     const info = await window.__OPENWORK_ELECTRON__?.invokeDesktop?.("openworkServerInfo");
     if (!info?.running || !info.baseUrl) return { ok: false, status: 0, error: "local_server_unavailable" };
-    const response = await fetch(
-      String(info.baseUrl).replace(/\\/+$/, "") + "/workspace/" + encodeURIComponent(${JSON.stringify(workspaceId)})
-        + "/sessions/" + encodeURIComponent(${JSON.stringify(sessionId)}) + "/snapshot",
-      {
-        headers: { Authorization: "Bearer " + String(info.ownerToken ?? info.clientToken ?? "") },
-        signal: AbortSignal.timeout(15000),
-      },
-    );
-    const status = response.status;
-    if (!response.ok) return { ok: false, status, sessionId: ${JSON.stringify(sessionId)}, text: "", tools: [] };
-    const payload = await response.json();
-    const item = payload?.item ?? {};
+    const base = String(info.baseUrl).replace(/\\/+$/, "") + "/workspace/" + encodeURIComponent(${JSON.stringify(workspaceId)})
+      + "/opencode/session";
+    const encodedSessionId = encodeURIComponent(${JSON.stringify(sessionId)});
+    const options = {
+      headers: { Authorization: "Bearer " + String(info.ownerToken ?? info.clientToken ?? "") },
+      signal: AbortSignal.timeout(15000),
+    };
+    const responses = await Promise.all([
+      fetch(base + "/" + encodedSessionId, options),
+      fetch(base + "/" + encodedSessionId + "/message?limit=50", options),
+      fetch(base + "/" + encodedSessionId + "/todo", options),
+      fetch(base + "/status", options),
+    ]);
+    const failed = responses.find((response) => !response.ok);
+    if (failed) return { ok: false, status: failed.status, sessionId: ${JSON.stringify(sessionId)}, text: "", tools: [] };
+    const [session, messageWires, todos, statuses] = await Promise.all(responses.map((response) => response.json()));
+    const item = { session, messages: messageWires, todos, status: statuses?.[session?.id] ?? { type: "idle" } };
     const messages = Array.isArray(item?.messages) ? item.messages : [];
     const text = messages.flatMap((message) => Array.isArray(message?.parts) ? message.parts : [])
       .flatMap((part) => typeof part?.text === "string" ? [part.text] : []).join("\\n");
@@ -424,7 +429,7 @@ async function readSessionFacts(desktopApp: App, workspaceId: string, sessionId:
       });
     return {
       ok: true,
-      status,
+      status: responses[0].status,
       sessionId: typeof item?.session?.id === "string" ? item.session.id : "",
       text,
       tools,

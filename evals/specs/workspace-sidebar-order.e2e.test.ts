@@ -215,6 +215,17 @@ test.skipIf(!e2eTestsEnabled)(title, { timeout: 20 * 60_000 }, async ({ evidence
     expect(new Set(initialOrder)).toEqual(new Set(seededWorkspaceIds));
     expect(await storedOrder(desktopApp)).toEqual(initialOrder);
 
+    const nestedWorkspaceButtons = await evalIn(
+      desktopApp,
+      `document.querySelectorAll("[data-sidebar-workspace-id] button button").length`,
+    );
+    expect(nestedWorkspaceButtons).toBe(0);
+    evidence.recordAssertionEvidence(
+      "Workspace controls use valid, non-nested buttons",
+      `All ${initialOrder.length} workspace rows rendered without one button containing another button.`,
+      true,
+    );
+
     const initialServerOrder = await listServerWorkspaces(desktopApp);
     const activatedWorkspaceId = initialOrder.find((id) => id !== initialServerOrder.activeId)
       ?? initialOrder[0];

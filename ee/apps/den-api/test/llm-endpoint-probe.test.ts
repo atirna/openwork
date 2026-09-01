@@ -69,7 +69,7 @@ describe("probeEndpoint", () => {
       allowLoopback: false,
       fetchImpl: async (url) => {
         calls.push(url)
-        if (url.startsWith("https://r.services.ai.azure.com")) {
+        if (new URL(url).origin === "https://r.services.ai.azure.com") {
           return jsonResponse(200, modelsPayload(["gpt-5-mini"]))
         }
         return jsonResponse(404, { error: { code: "404" } })

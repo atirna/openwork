@@ -1,4 +1,4 @@
-import { readFile } from "node:fs/promises";
+import { readFile, realpath } from "node:fs/promises";
 import { join } from "node:path";
 import { homedir, platform } from "node:os";
 import { z } from "zod";
@@ -98,20 +98,8 @@ const sessionTimeSchema = z.object({
 const sessionInfoSchema = z.object({
   id: z.string(),
   title: z.string().nullish(),
+  directory: z.string().optional(),
   time: sessionTimeSchema.optional(),
-}).passthrough();
-
-const sessionListEnvelopeSchema = z.object({
-  items: z.array(sessionInfoSchema),
-}).passthrough();
-
-const sessionEnvelopeSchema = z.object({
-  item: sessionInfoSchema,
-}).passthrough();
-
-const createdSessionEnvelopeSchema = z.object({
-  item: sessionInfoSchema,
-  started: z.boolean(),
 }).passthrough();
 
 const sessionPartSchema = z.object({
@@ -128,10 +116,6 @@ const sessionMessageSchema = z.object({
     time: sessionTimeSchema.optional(),
   }).passthrough(),
   parts: z.array(sessionPartSchema),
-}).passthrough();
-
-const sessionMessagesEnvelopeSchema = z.object({
-  items: z.array(sessionMessageSchema),
 }).passthrough();
 
 const OPENWORK_AGENT_SURFACE_INSTRUCTION =
@@ -485,7 +469,7 @@ async function executeOpenworkAffordance(
   if (request.id === "automation.propose") {
     return affordanceResult(
       request.id,
-      proposeAutomation(request.args ?? {}),
+      proposeAutomation(request.args ?? {}, context),
       affordanceProposalEffects,
     );
   }
@@ -633,22 +617,42 @@ function filterWorkspaces(workspaces: OpenWorkWorkspace[], workspaceId?: string)
 
 async function listWorkspaceSessions(workspace: OpenWorkWorkspace, limit: number): Promise<SessionInfo[]> {
   const query = new URLSearchParams({ roots: "true", limit: String(limit) });
-  return sessionListEnvelopeSchema.parse(
-    await serverGet(`/workspace/${encodeURIComponent(workspace.id)}/sessions?${query.toString()}`),
-  ).items;
+  return z.array(sessionInfoSchema).parse(
+    await serverGet(`/workspace/${encodeURIComponent(workspace.id)}/opencode/session?${query.toString()}`),
+  );
+}
+
+// The removed wrapper route validated that a session actually belongs to the
+// requested workspace before exposing it (requireWorkspaceSession). The native
+// engine route only scopes the upstream request, so a caller supplying a
+// foreign session ID would otherwise read cross-workspace transcript data.
+async function assertSessionInWorkspace(workspace: OpenWorkWorkspace, session: SessionInfo): Promise<void> {
+  const workspacePath = workspace.path?.trim();
+  const sessionDirectory = session.directory?.trim();
+  if (!workspacePath || !sessionDirectory) return;
+  const [root, dir] = await Promise.all([
+    realpath(workspacePath).catch(() => workspacePath),
+    realpath(sessionDirectory).catch(() => sessionDirectory),
+  ]);
+  const normalizedRoot = normalizeDirPath(root);
+  const normalizedDir = normalizeDirPath(dir);
+  if (normalizedDir === normalizedRoot || normalizedDir.startsWith(`${normalizedRoot}/`)) return;
+  throw new Error(`Session ${session.id} not found in workspace ${workspaceLabel(workspace)}`);
 }
 
 async function readWorkspaceSession(workspace: OpenWorkWorkspace, sessionId: string): Promise<SessionInfo> {
-  return sessionEnvelopeSchema.parse(
-    await serverGet(`/workspace/${encodeURIComponent(workspace.id)}/sessions/${encodeURIComponent(sessionId)}`),
-  ).item;
+  const session = sessionInfoSchema.parse(
+    await serverGet(`/workspace/${encodeURIComponent(workspace.id)}/opencode/session/${encodeURIComponent(sessionId)}`),
+  );
+  await assertSessionInWorkspace(workspace, session);
+  return session;
 }
 
 async function readSessionMessages(workspace: OpenWorkWorkspace, sessionId: string, limit: number): Promise<SessionMessage[]> {
   const query = new URLSearchParams({ limit: String(limit) });
-  return sessionMessagesEnvelopeSchema.parse(
-    await serverGet(`/workspace/${encodeURIComponent(workspace.id)}/sessions/${encodeURIComponent(sessionId)}/messages?${query.toString()}`),
-  ).items;
+  return z.array(sessionMessageSchema).parse(
+    await serverGet(`/workspace/${encodeURIComponent(workspace.id)}/opencode/session/${encodeURIComponent(sessionId)}/message?${query.toString()}`),
+  );
 }
 
 async function forEachWithConcurrency<T>(items: T[], concurrency: number, run: (item: T) => Promise<void>): Promise<void> {
@@ -838,16 +842,20 @@ async function createOpenWorkSessions(rawArgs: unknown, context: OpenCodeContext
   const workspace = await resolveContextWorkspace(args.workspaceId, context);
   const results = await Promise.all(args.sessions.map(async (session): Promise<CreatedOpenWorkSessionResult | FailedOpenWorkSessionResult> => {
     try {
-      const payload = createdSessionEnvelopeSchema.parse(await postJson(
-        `/workspace/${encodeURIComponent(workspace.id)}/sessions`,
-        session,
+      const payload = sessionInfoSchema.parse(await postJson(
+        `/workspace/${encodeURIComponent(workspace.id)}/opencode/session`,
+        { title: session.title },
       ));
+      await postJson(
+        `/workspace/${encodeURIComponent(workspace.id)}/opencode/session/${encodeURIComponent(payload.id)}/prompt_async`,
+        { parts: [{ type: "text", text: session.prompt }] },
+      );
       return {
         ok: true,
-        sessionId: payload.item.id,
-        title: payload.item.title?.trim() || session.title,
-        started: payload.started,
-        route: `/workspace/${encodeURIComponent(workspace.id)}/session/${encodeURIComponent(payload.item.id)}`,
+        sessionId: payload.id,
+        title: payload.title?.trim() || session.title,
+        started: true,
+        route: `/workspace/${encodeURIComponent(workspace.id)}/session/${encodeURIComponent(payload.id)}`,
       };
     } catch (error) {
       return {
@@ -875,8 +883,15 @@ async function createOpenWorkSessions(rawArgs: unknown, context: OpenCodeContext
  * and the Den credential lives in the renderer, so an agent can describe an
  * Automation but only a person can create one.
  */
-function proposeAutomation(rawArgs: unknown): object {
-  const proposal = automationProposalSchema.parse(rawArgs);
+function proposeAutomation(rawArgs: unknown, context: OpenCodeContext): object {
+  const { workspaceId: _modelSupplied, ...parsed } = automationProposalSchema.parse(rawArgs);
+  // Pin the proposing conversation's workspace so the Automation keeps running
+  // there even after the person activates a different workspace. The pin comes
+  // from the engine-provided context only: a model-supplied workspaceId is
+  // discarded so a prompt-injected agent cannot retarget the Automation to a
+  // workspace the person is not looking at.
+  const workspaceId = context.workspaceId ?? context.workspaceID;
+  const proposal = workspaceId ? { ...parsed, workspaceId } : parsed;
   return {
     ok: true,
     kind: "automation-proposal",

@@ -9,12 +9,7 @@ import {
 } from "react";
 import { useLocation, useNavigate } from "react-router";
 import { toast } from "@/components/ui/sonner";
-import type {
-  AgentPartInput,
-  FilePartInput,
-  ProviderListResponse,
-  TextPartInput,
-} from "@opencode-ai/sdk/v2/client";
+import type { ProviderListResponse } from "@opencode-ai/sdk/v2/client";
 
 import { captureAnalyticsEvent, markTaskRunStart } from "@/app/lib/analytics";
 import { trackSessionActive, trackTaskStarted } from "@/app/lib/den-telemetry";
@@ -23,6 +18,7 @@ import { downloadTextAsFile } from "@/app/lib/download";
 import { canCreateWorkspaces } from "@/app/lib/workspace-creation-policy";
 import { createClient, unwrap } from "@/app/lib/opencode";
 import { abortSessionSafe, forkSession, listCommands, revertSession, setSessionArchived, shellInSession, unrevertSession } from "@/app/lib/opencode-session";
+import { deleteNativeSession, getNativeSessionMessages } from "@/app/lib/opencode-session-native";
 import { useSessionManagementStore as sessionManagementStore } from "@/react-app/domains/session/sidebar/session-management-store";
 import {
   buildOpenworkWorkspaceBaseUrl,
@@ -51,7 +47,6 @@ import {
 import type {
   ComposerAttachment,
   ComposerDraft,
-  ComposerPart,
   ModelOption,
   ModelRef,
   SlashCommandOption,
@@ -113,8 +108,7 @@ import {
   applySessionRevert,
   applySessionUnrevert,
 } from "@/react-app/domains/session/sync/session-sync";
-import { firstLineLocalFileParts, joinWorkspaceRelativePath, toFileUrl } from "@/react-app/domains/session/sync/prompt-file-parts";
-import { composerAttachmentsToWorkspaceFileParts } from "@/react-app/domains/session/sync/attachment-file-part";
+import { draftToParts } from "@/react-app/domains/session/sync/draft-parts";
 import { useSessionInteractions } from "@/react-app/domains/session/sync/use-session-interactions";
 import { useModelBehavior } from "@/react-app/domains/session/surface/use-model-behavior";
 import { getModelBehaviorSummary, nextModelBehaviorValue, previousModelBehaviorValue } from "@/app/lib/model-behavior";
@@ -129,9 +123,6 @@ import {
   useModelCollectionsStore,
 } from "@/react-app/domains/session/models/model-collections-store";
 import { openModelPickerEvent, openProviderAuthEvent } from "@/react-app/shell/new-providers-listener";
-import { appMentionInstruction } from "@/react-app/domains/session/surface/composer/app-mentions";
-import { decodeComposerMentionValue } from "@/react-app/domains/session/surface/composer/mention-encoding";
-import { connectSkillPrompt, parseConnectSkillToken } from "@/react-app/domains/session/surface/composer/connect-skill-token";
 import { markComposerAutoSend } from "@/react-app/domains/session/surface/composer-auto-send";
 import { sendWithRevertRollback } from "@/react-app/domains/session/surface/safe-edit-resend";
 import { CreateRemoteWorkspaceModal } from "@/react-app/domains/workspace/create-remote-workspace-modal";
@@ -145,7 +136,6 @@ import {
   type ModelEntitlementOption,
 } from "@/react-app/domains/connections/provider-auth/provider-policy";
 import {
-  isManagedModelAvailabilityPending,
   isOrganizationModelsEmpty,
   shouldAutoOpenUnavailableModelPicker,
 } from "@/react-app/domains/connections/provider-auth/managed-models-recovery";
@@ -340,166 +330,6 @@ function nextEvalUnavailableModel(current: ModelRef | null | undefined) {
   } satisfies ModelRef;
 }
 
-// All workspace-scoped server URLs/clients/tokens come from
-// `resolveWorkspaceEndpoint` in apps/app/src/app/lib/workspace-endpoint.ts.
-// Don't compose `<baseUrl>/workspace/<id>` here.
-
-async function draftToParts(
-  draft: ComposerDraft,
-  workspaceRoot: string,
-  sessionId: string,
-  endpoint: ResolvedWorkspaceEndpoint | null,
-) {
-  const parts: Array<TextPartInput | FilePartInput | AgentPartInput> = [];
-  const root = workspaceRoot.trim();
-
-  const toAbsolutePath = (path: string) => {
-    const trimmed = path.trim();
-    if (!trimmed) return "";
-    if (trimmed.startsWith("/")) return trimmed;
-    if (/^[a-zA-Z]:[\\/]/.test(trimmed)) return trimmed;
-    if (!root) return "";
-    return joinWorkspaceRelativePath(root, trimmed);
-  };
-
-  const filenameFromPath = (path: string) => {
-    const normalized = path.replace(/\\/g, "/");
-    const segments = normalized.split("/").filter(Boolean);
-    return segments[segments.length - 1] ?? "file";
-  };
-
-  const attachmentFileById = new Map<string, FilePartInput>();
-  if (draft.attachments.length > 0) {
-    if (!endpoint) {
-      throw new Error("Workspace endpoint is unavailable; attachments could not be copied for tool access.");
-    }
-    const uploaded = await composerAttachmentsToWorkspaceFileParts({
-      attachments: draft.attachments,
-      endpoint,
-      sessionId,
-      workspaceRoot: root,
-    });
-    for (const part of uploaded) {
-      if (part.type === "text") {
-        parts.push(part);
-        continue;
-      }
-    }
-    const fileParts = uploaded.filter((part): part is FilePartInput => part.type === "file");
-    for (const [index, attachment] of draft.attachments.entries()) {
-      const filePart = fileParts[index];
-      if (filePart) attachmentFileById.set(attachment.id, filePart);
-    }
-  }
-
-  // Prefer draft.text token order so attachment chips stay inline with surrounding text
-  // (same positions as the composer), instead of dumping every file part at the end.
-  const hasAttachmentTokens = /\[attachment [^\]]+\]/.test(draft.text);
-  if (hasAttachmentTokens || attachmentFileById.size > 0) {
-    const pasteByLabel = new Map(
-      draft.parts
-        .filter((part): part is Extract<ComposerPart, { type: "paste" }> => part.type === "paste")
-        .map((part) => [part.label, part.text] as const),
-    );
-    for (const segment of draft.text.split(/(\[attachment [^\]]+\]|\[pasted text [^\]]+\]|\[connect-skill [^\]]+\]|\[skill [^\]]+\]|@[^\s@]+)/)) {
-      if (!segment) continue;
-      const attachmentMatch = segment.match(/^\[attachment (.+)\]$/);
-      if (attachmentMatch?.[1]) {
-        const filePart = attachmentFileById.get(attachmentMatch[1]);
-        if (filePart) {
-          parts.push(filePart);
-          attachmentFileById.delete(attachmentMatch[1]);
-        }
-        continue;
-      }
-      const pasteMatch = segment.match(/^\[pasted text (.+)\]$/);
-      if (pasteMatch?.[1]) {
-        const pasted = pasteByLabel.get(pasteMatch[1]);
-        if (pasted) parts.push({ type: "text", text: pasted });
-        continue;
-      }
-      const connectSkill = parseConnectSkillToken(segment);
-      if (connectSkill) {
-        parts.push({ type: "text", text: connectSkillPrompt(connectSkill) });
-        continue;
-      }
-      const skillMatch = segment.match(/^\[skill (.+)\]$/);
-      if (skillMatch?.[1]) {
-        parts.push({ type: "text", text: `Load [skill ${skillMatch[1]}] and follow its instructions.` });
-        continue;
-      }
-      if (segment.startsWith("@")) {
-        const value = decodeComposerMentionValue(segment.slice(1));
-        const mentionPart = draft.parts.find((part) =>
-          (part.type === "agent" && part.name === value)
-          || (part.type === "app" && part.name === value)
-          || (part.type === "file" && part.path === value),
-        );
-        if (mentionPart?.type === "agent") {
-          parts.push({ type: "agent", name: mentionPart.name });
-          continue;
-        }
-        if (mentionPart?.type === "app") {
-          parts.push({ type: "text", text: appMentionInstruction(mentionPart.name) });
-          continue;
-        }
-        if (mentionPart?.type === "file") {
-          const absolute = toAbsolutePath(mentionPart.path);
-          if (!absolute) continue;
-          parts.push({
-            type: "file",
-            mime: "text/plain",
-            url: toFileUrl(absolute),
-            filename: filenameFromPath(mentionPart.path),
-          });
-          continue;
-        }
-      }
-      parts.push({ type: "text", text: segment });
-    }
-    for (const filePart of attachmentFileById.values()) {
-      parts.push(filePart);
-    }
-  } else {
-    for (const part of draft.parts) {
-      if (part.type === "text") {
-        parts.push({ type: "text", text: part.text });
-        continue;
-      }
-      if (part.type === "paste") {
-        parts.push({ type: "text", text: part.text });
-        continue;
-      }
-      if (part.type === "agent") {
-        parts.push({ type: "agent", name: part.name });
-        continue;
-      }
-      if (part.type === "skill") {
-        parts.push({ type: "text", text: `Load [skill ${part.name}] and follow its instructions.` });
-        continue;
-      }
-      if (part.type === "app") {
-        parts.push({ type: "text", text: appMentionInstruction(part.name) });
-        continue;
-      }
-      if (part.type === "file") {
-        const absolute = toAbsolutePath(part.path);
-        if (!absolute) continue;
-        parts.push({
-          type: "file",
-          mime: "text/plain",
-          url: toFileUrl(absolute),
-          filename: filenameFromPath(part.path),
-        });
-      }
-    }
-  }
-
-  parts.push(...firstLineLocalFileParts(draft.resolvedText ?? draft.text, root));
-
-  return parts;
-}
-
 function singlePickedDirectory(selection: string | string[] | null) {
   return typeof selection === "string"
     ? selection
@@ -633,6 +463,7 @@ export function SessionRoute() {
     routeNotFoundMessage,
     endpointForWorkspace,
     refreshRouteState,
+    reloadWorkspaceSessions,
     rememberPendingCreatedSession,
     handleRuntimeSessionCreated,
     handleRuntimeSessionUpdated,
@@ -1071,9 +902,6 @@ export function SessionRoute() {
     window.addEventListener(openModelPickerEvent, handler);
     return () => window.removeEventListener(openModelPickerEvent, handler);
   }, []);
-  const selectedModelUsesCloudProvider = Boolean(
-    local.prefs.defaultModel && isCloudManagedProviderKey(local.prefs.defaultModel.providerID),
-  );
   const entitledOrgDefaultModel = useMemo(() => {
     const runtimeOptions = providerListModelEntitlementOptions(
       cloudProviderList ?? providerListQuery.data,
@@ -1097,12 +925,6 @@ export function SessionRoute() {
   useEffect(() => {
     if (entitledOrgDefaultModel) writeStoredDefaultModel(entitledOrgDefaultModel);
   }, [entitledOrgDefaultModel]);
-  const selectedModelAvailabilityPending = isManagedModelAvailabilityPending({
-    signedIn: denAuth.isSignedIn,
-    selectedModelUsesCloudProvider,
-    cloudProviderSyncReady,
-    openWorkModelsSyncing,
-  });
   // Availability is resolved per effective model identity: the New Task
   // composer validates the global default while each conversation validates
   // its OWN remembered provider/model against the current workspace's
@@ -1205,18 +1027,22 @@ export function SessionRoute() {
     modelPicker.setOpen(true);
   }, [activeComposerTargetsSession, cloudProviderSyncReady, denAuth.isSignedIn, entitledOrgDefaultModel, modelPicker.setCompactOpen, modelPicker.setOpen, modelPicker.setQuery, modelPicker.setRecentProviderIds, organizationModelsEmpty, selectedModelUnavailableKey, selectedSessionId]);
 
+  // Optimistic model selection: a remembered model is treated as valid until
+  // the availability gate CONFIRMS it absent (selectedModelUnavailable).
+  // A merely-pending verdict (cloud sync settling, catalog reloading) never
+  // blocks task creation or paints loading chrome — if the optimism turns out
+  // wrong, the send-time re-check and the composer's model-unavailable pill
+  // surface it where the person can act on it.
   const hasUsableModel = Boolean(
     local.prefs.defaultModel &&
-      !selectedModelUnavailable &&
-      !selectedModelAvailabilityPending,
+      !selectedModelUnavailable,
   );
   const canCreateTask = Boolean(
     opencodeClient &&
       selectedWorkspaceId &&
       !loading &&
       !selectedWorkspaceError &&
-      !selectedModelUnavailable &&
-      !selectedModelAvailabilityPending,
+      !selectedModelUnavailable,
   );
 
   const {
@@ -1238,12 +1064,6 @@ export function SessionRoute() {
     : selectedModelUnavailable
       ? t("models.model_unavailable_short")
       : null;
-  const showPreparingStatus =
-    !organizationModelsEmpty &&
-    (effectiveLoading ||
-      selectedModelAvailabilityPending ||
-      (!canCreateTask && !routeError && !selectedWorkspaceError));
-
   useEffect(() => {
     if (!opencodeClient) {
       setProviders([]);
@@ -2444,6 +2264,7 @@ export function SessionRoute() {
     canCreateTask,
     openworkClient: client,
     opencodeClient,
+    endpointForWorkspace,
     navigateToSession: navigateToSessionForControl,
     navigateToSessionRoot: navigateToSessionRootForControl,
     createTaskInWorkspace: handleCreateTaskInWorkspace,
@@ -2682,9 +2503,13 @@ export function SessionRoute() {
     // Cap the transcript fetch to keep multi-workspace scans fast; matches in
     // anything older than the most recent 400 messages are traded away for
     // responsiveness.
-    return async (workspaceId: string, sessionId: string) =>
-      (await client.getSessionMessages(workspaceId, sessionId, { limit: 400 })).items;
-  }, [client]);
+    return async (workspaceId: string, sessionId: string) => {
+      const workspace = workspaces.find((item) => item.id === workspaceId);
+      const endpoint = endpointForWorkspace(workspace);
+      if (!endpoint) throw new Error("Workspace runtime is not connected.");
+      return getNativeSessionMessages(endpoint, sessionId, { limit: 400 });
+    };
+  }, [client, endpointForWorkspace, workspaces]);
 
   const sessionSearchPaletteItem = useMemo<PaletteItem>(() => ({
     id: "session-search.open",
@@ -2863,13 +2688,20 @@ export function SessionRoute() {
   const handleArchiveSession = useCallback(
     async (sessionId: string, archived: boolean) => {
       if (!opencodeClient) return;
+      // The sidebar lists sessions from every workspace, so resolve the
+      // session's owning workspace instead of assuming the selected one —
+      // session.update needs the directory the session actually lives in.
+      const ownerWorkspace = workspaceSessionGroups.find((group) =>
+        group.sessions.some((session) => session?.id === sessionId),
+      )?.workspace;
       try {
         await setSessionArchived(
           opencodeClient,
           sessionId,
           archived,
-          selectedWorkspaceRoot || undefined,
+          ownerWorkspace?.path || selectedWorkspaceRoot || undefined,
         );
+        if (ownerWorkspace) await reloadWorkspaceSessions(ownerWorkspace.id);
         await refreshRouteState();
       } catch (error) {
         console.error("[session-route] archive session failed", error);
@@ -2881,7 +2713,7 @@ export function SessionRoute() {
         );
       }
     },
-    [opencodeClient, refreshRouteState, selectedWorkspaceRoot],
+    [opencodeClient, refreshRouteState, reloadWorkspaceSessions, selectedWorkspaceRoot, workspaceSessionGroups],
   );
 
   const handleCreateWorkspace = useCallback(async (
@@ -3213,7 +3045,7 @@ export function SessionRoute() {
       }
       primaryTitle={automationsRouteActive ? "Automations" : dashboardRouteActive ? "Dashboard" : undefined}
       primarySlot={automationsRouteActive ? (
-        <AutomationsPage providerCatalog={providerCatalog} />
+        <AutomationsPage providerCatalog={providerCatalog} workspaceId={selectedWorkspaceId} />
       ) : dashboardRouteActive ? (
         <WorkspaceProvider
           client={opencodeClient}
@@ -3422,7 +3254,7 @@ export function SessionRoute() {
           ? async (sessionId) => {
               const endpoint = endpointForWorkspace(selectedWorkspace);
               if (!endpoint) return;
-              await endpoint.client.deleteSession(endpoint.workspaceId, sessionId);
+              await deleteNativeSession(endpoint, sessionId);
               if (selectedSessionId === sessionId) {
                 navigateToWorkspaceSession(selectedWorkspaceId);
               }
@@ -3432,7 +3264,9 @@ export function SessionRoute() {
       }
       onArchiveSession={opencodeClient ? handleArchiveSession : undefined}
       statusBar={{
-        loading: showPreparingStatus,
+        // No per-session loading state here: the account row renders only
+        // app-scoped facts. Session loading lives in the pane; an unresolved
+        // model surfaces in the composer where the person can act on it.
         reloadBusy: reloadCoordinator.reloadBusy,
         reloadError: reloadCoordinator.reloadError,
         openWorkConnectState: sessionMcpMaintenance,

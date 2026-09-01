@@ -147,13 +147,13 @@ function pptxFixture(text = PPTX_SENTINEL) {
   ]);
 }
 
-function xlsxFixture(text = XLSX_SENTINEL) {
+function xlsxFixture(text = XLSX_SENTINEL, rawValue = "1742.42") {
   return zip([
     { name: "xl/workbook.xml", data: Buffer.from(`<workbook xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"><sheets><sheet name="Summary" sheetId="1" r:id="rId1"/></sheets></workbook>`, "utf8") },
     { name: "xl/_rels/workbook.xml.rels", data: Buffer.from(`<Relationships><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet1.xml"/></Relationships>`, "utf8") },
     { name: "xl/sharedStrings.xml", data: Buffer.from(`<sst><si><t>${text}</t></si><si><t>Northstar Revenue</t></si><si><r><t>EM</t></r><r><t>EA</t></r></si></sst>`, "utf8") },
     { name: "xl/styles.xml", data: Buffer.from(`<styleSheet><numFmts count="1"><numFmt numFmtId="164" formatCode="$#,##0.00"/></numFmts><cellXfs count="2"><xf numFmtId="0"/><xf numFmtId="164" applyNumberFormat="1"/></cellXfs></styleSheet>`, "utf8") },
-    { name: "xl/worksheets/sheet1.xml", data: Buffer.from(`<worksheet><dimension ref="A1:D3"/><sheetData><row r="1"><c r="A1" t="s"><v>0</v></c></row><row r="2"><c r="A2" t="s"><v>1</v></c><c r="B2" t="s"><v>2</v></c><c r="C2" s="1"><v>1742.42</v></c><c r="D2" s="1"><f>SUM(C2:C3)</f><v>3484.84</v></c></row><row r="3"><c r="C3" s="1"><v>1742.42</v></c></row></sheetData><mergeCells count="1"><mergeCell ref="A1:D1"/></mergeCells></worksheet>`, "utf8") },
+    { name: "xl/worksheets/sheet1.xml", data: Buffer.from(`<worksheet><dimension ref="A1:D3"/><sheetData><row r="1"><c r="A1" t="s"><v>0</v></c></row><row r="2"><c r="A2" t="s"><v>1</v></c><c r="B2" t="s"><v>2</v></c><c r="C2" s="1"><v>${rawValue}</v></c><c r="D2" s="1"><f>SUM(C2:C3)</f><v>3484.84</v></c></row><row r="3"><c r="C3" s="1"><v>1742.42</v></c></row></sheetData><mergeCells count="1"><mergeCell ref="A1:D1"/></mergeCells></worksheet>`, "utf8") },
   ]);
 }
 
@@ -223,6 +223,54 @@ describe("OpenWorkOfficeAttachments", () => {
       expect(JSON.stringify(messages)).not.toContain(xlsx.toString("base64"));
       expect(JSON.stringify(messages)).not.toContain('"type":"file"');
       await expect(readFile(join(root, pathFromText(text)))).resolves.toEqual(xlsx);
+    });
+  });
+
+  test("parses nested Office XML and entities once while omitting script and style content", async () => {
+    await withWorkspace(async (root) => {
+      const docx = docxFixture("Alpha &amp; Beta &lt;tag&gt; &amp;lt;once&amp;gt;<w:span>nested <w:b>bold</w:span> tail<script>SCRIPT_SENTINEL</script><style>STYLE_SENTINEL</style>");
+      const xlsx = xlsxFixture("Sheet &amp; &lt;cell&gt; &amp;lt;once&amp;gt;<b>nested</b><script>SCRIPT_SENTINEL</script>", "17<fake>42</fake>");
+      const messages = await transform(root, [{
+        role: "user",
+        parts: [
+          { type: "file", filename: "Nested.docx", mediaType: DOCX_MIME, url: dataUrl(DOCX_MIME, docx) },
+          { type: "file", filename: "Nested.xlsx", mediaType: XLSX_MIME, url: dataUrl(XLSX_MIME, xlsx) },
+        ],
+      }]);
+      const [docxPart, xlsxPart] = messageParts(messages[0]);
+      const docxText = textOf(docxPart);
+      const xlsxText = textOf(xlsxPart);
+
+      expect(docxText).toContain("Alpha & Beta <tag> &lt;once&gt; nested bold tail");
+      expect(xlsxText).toContain('displayed_value: "Sheet & <cell> &lt;once&gt;nested"');
+      expect(xlsxText).toContain('raw_value: "1742"');
+      expect(docxText).not.toContain("SCRIPT_SENTINEL");
+      expect(docxText).not.toContain("STYLE_SENTINEL");
+      expect(xlsxText).not.toContain("SCRIPT_SENTINEL");
+    });
+  });
+
+  test("rejects Office XML DTD and XXE-shaped entity declarations", async () => {
+    await withWorkspace(async (root) => {
+      const dtd = '<!DOCTYPE document [<!ENTITY internal "DTD_SENTINEL"><!ENTITY xxe SYSTEM "https://example.invalid/xxe">]>';
+      const docx = zip([{ name: "word/document.xml", data: Buffer.from(`${dtd}<w:document><w:t>&internal; &xxe;</w:t></w:document>`, "utf8") }]);
+      const xlsx = zip([
+        { name: "xl/workbook.xml", data: Buffer.from(`${dtd}<workbook><sheets><sheet name="Summary" sheetId="1"/></sheets></workbook>`, "utf8") },
+      ]);
+      const messages = await transform(root, [{
+        role: "user",
+        parts: [
+          { type: "file", filename: "XXE.docx", mediaType: DOCX_MIME, url: dataUrl(DOCX_MIME, docx) },
+          { type: "file", filename: "XXE.xlsx", mediaType: XLSX_MIME, url: dataUrl(XLSX_MIME, xlsx) },
+        ],
+      }]);
+
+      for (const part of messageParts(messages[0])) {
+        const text = textOf(part);
+        expect(text).toContain("Office XML DTD and entity declarations are not supported");
+        expect(text).not.toContain("DTD_SENTINEL");
+        expect(text).not.toContain("example.invalid");
+      }
     });
   });
 

@@ -38,7 +38,6 @@ import {
 } from "@openwork/enterprise-mcp-client";
 import { ApiError } from "./errors.js";
 import { sanitizeDiagnosticString } from "./diagnostic-sanitizer.js";
-import { backupTimestamp } from "./legacy-config-sweep.js";
 import { runtimeStorageDir } from "./runtime-db.js";
 import {
   readRuntimeOpencodeConfig,
@@ -435,6 +434,18 @@ async function pruneOrphanedManagedRuntimeEntries(config: ServerConfig, vault: L
  * rebuild the vault from the plaintext index (v2) or empty (v1) so members can
  * reconnect instead of hitting raw crypto errors.
  */
+function backupTimestamp(date: Date): string {
+  const parts = [
+    date.getFullYear(),
+    date.getMonth() + 1,
+    date.getDate(),
+    date.getHours(),
+    date.getMinutes(),
+    date.getSeconds(),
+  ];
+  return parts.map((part, index) => String(part).padStart(index === 0 ? 4 : 2, "0")).join("");
+}
+
 async function recoverVaultLocked(config: ServerConfig, file: VaultFileState): Promise<LoadedVault> {
   const path = vaultPath(config);
   const backupName = `${basename(path)}.openwork-backup-${backupTimestamp(new Date())}`;

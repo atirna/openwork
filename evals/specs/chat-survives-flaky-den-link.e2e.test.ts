@@ -176,11 +176,11 @@ const toolRunningExpression = (workspaceId: string, sessionId: string): string =
   if (!port || !token) return false;
   const response = await fetch(
     "http://127.0.0.1:" + port + "/workspace/" + encodeURIComponent(${JSON.stringify(workspaceId)})
-      + "/sessions/" + encodeURIComponent(${JSON.stringify(sessionId)}) + "/messages?limit=50",
+      + "/opencode/session/" + encodeURIComponent(${JSON.stringify(sessionId)}) + "/message?limit=50",
     { headers: { Authorization: "Bearer " + token } },
   );
   const payload = await response.json();
-  return (Array.isArray(payload?.items) ? payload.items : []).some((message) =>
+  return (Array.isArray(payload) ? payload : []).some((message) =>
     (Array.isArray(message?.parts) ? message.parts : []).some((part) =>
       part && typeof part.tool === "string" && part.tool.includes("bash")
         && (part.state?.status === "running" || part.state?.status === "pending")));

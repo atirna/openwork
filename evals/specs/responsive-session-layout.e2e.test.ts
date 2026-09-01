@@ -1,13 +1,15 @@
 import { expect } from "vitest";
-import { control, evalIn, go, listSessions, waitFor } from "@openwork/behaviors";
+import { control, evalIn, go, listSessions, seedSessions, waitFor } from "@openwork/behaviors";
 import type { Surface } from "@openwork/cdp";
 import { setViewport } from "@openwork/cdp";
 import {
   localMysqlIsRunning,
   localRedisIsRunning,
   needs,
-  soloWorkspace,
-  startWorld,
+  app as launchApp,
+  createAdmin,
+  createOrg,
+  server,
   test,
 } from "@openwork/testkit";
 
@@ -80,7 +82,7 @@ async function pressPaneKey(app: Surface, pane: "chat" | "split" | "panel", key:
   expect(pressed).toBe(true);
 }
 
-async function openToolsPanel(app: Surface) {
+async function openFilesPanel(app: Surface) {
   const openedMenu = await evalIn(app, `(() => {
     const button = document.querySelector('button[aria-label="More actions"]');
     if (!(button instanceof HTMLButtonElement)) return false;
@@ -89,13 +91,13 @@ async function openToolsPanel(app: Surface) {
   })()`);
   expect(openedMenu).toBe(true);
   await waitFor(app, `Boolean([...document.querySelectorAll('[role="menuitem"]')]
-    .find((item) => (item.textContent ?? '').trim().startsWith('Artifacts')))`, {
+    .find((item) => (item.textContent ?? '').trim().startsWith('Files')))`, {
     timeoutMs: 15_000,
-    label: "Artifacts menu item",
+    label: "Files menu item",
   });
   const openedPanel = await evalIn(app, `(() => {
     const item = [...document.querySelectorAll('[role="menuitem"]')]
-      .find((candidate) => (candidate.textContent ?? '').trim().startsWith('Artifacts'));
+      .find((candidate) => (candidate.textContent ?? '').trim().startsWith('Files'));
     if (!(item instanceof HTMLElement)) return false;
     item.click();
     return true;
@@ -106,14 +108,15 @@ async function openToolsPanel(app: Surface) {
 test.skipIf(!runnable)(
   `narrow session panes stay selectable, synchronized, and inside the viewport${skipSuffix}`,
   { timeout: 600_000 },
-  async ({ evidence }) => {
+  async ({ evidence, place }) => {
     needs({ optIn: ["OPENWORK_EVAL_E2E_TESTS"] });
 
-    const runId = Date.now();
-    await using world = await startWorld(soloWorkspace.with({
-      apps: { main: { sessions: [...sessionTitles] } },
-    }), { name: `responsive-session-layout-${runId}` });
-    const app = world.app("main");
+    await using stack = new AsyncDisposableStack();
+    const den = stack.use(await server({ place, provision: false, web: true }));
+    await createAdmin(den, {});
+    stack.use(await createOrg(den, "acme"));
+    const app = stack.use(await launchApp({ den, place, as: "admin" }));
+    await seedSessions(app, sessionTitles);
     const workspaceId = app.workspaceId;
     if (!workspaceId) throw new Error("The responsive session world did not resolve a workspace.");
 
@@ -238,7 +241,7 @@ test.skipIf(!runnable)(
       true,
     );
 
-    await openToolsPanel(app);
+    await openFilesPanel(app);
     await waitFor(app, `document.querySelector('[data-narrow-pane="panel"]')?.getAttribute('aria-selected') === 'true'
       && Boolean(document.getElementById('narrow-session-pane-panel'))`, {
       timeoutMs: 30_000,

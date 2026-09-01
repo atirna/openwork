@@ -21,18 +21,33 @@ test(title, async ({ evidence, place }) => {
   await using desktop = await app({ den, as: "admin", place });
 
   await go(desktop, `/workspace/${desktop.workspaceId}/session`);
-  await waitFor(desktop, `Boolean(document.querySelector('button[aria-label="Change model"]'))`, {
+  await waitFor(desktop, `[...document.querySelectorAll('button[aria-label="Change model"]')]
+    .some((trigger) => (trigger.textContent ?? '').trim() === 'Big Pickle')`, {
     timeoutMs: 60_000,
     label: "composer model selector",
   });
 
   const compactOpened = await evalIn(desktop, `(() => {
-    const trigger = document.querySelector('button[aria-label="Change model"]');
+    const trigger = [...document.querySelectorAll('button[aria-label="Change model"]')]
+      .find((candidate) => (candidate.textContent ?? '').trim() === 'Big Pickle');
     if (!(trigger instanceof HTMLButtonElement)) return false;
     trigger.click();
     return true;
   })()`);
   expect(compactOpened).toBe(true);
+  await waitFor(desktop, `Boolean(document.querySelector('[data-slot="model-select-root"]'))`, {
+    timeoutMs: 20_000,
+    label: "model quick controls",
+  });
+  const modelPaneOpened = await evalIn(desktop, `(() => {
+    const root = document.querySelector('[data-slot="model-select-root"]');
+    const model = root && [...root.querySelectorAll('button')]
+      .find((button) => button.querySelector('span')?.textContent?.trim() === 'Model');
+    if (!(model instanceof HTMLButtonElement)) return false;
+    model.click();
+    return true;
+  })()`);
+  expect(modelPaneOpened).toBe(true);
   await waitFor(desktop, `Boolean(document.querySelector('[data-slot="popover-content"] input[placeholder="Search models..."]'))`, {
     timeoutMs: 20_000,
     label: "compact model picker",
